@@ -11,14 +11,33 @@ import (
 	"github.com/kzantow/go-ld"
 )
 
-type nameMap map[string]*Class
-type renamer func(typ NameType, name string) string
-
 type Generator struct {
-	nameToIRI map[string]string
+	pkgName           string
+	outputFile        string
+	outputValidations bool
+	nameToIRI         map[string]string
 	nameMap
 	renamer
 }
+
+func NewGenerator(opts ...Option) *Generator {
+	g := &Generator{
+		pkgName:           "model",
+		outputValidations: true,
+		nameToIRI:         map[string]string{},
+		nameMap:           nameMap{},
+		renamer: func(typ NameType, name string) string {
+			return ""
+		},
+	}
+	for _, opt := range opts {
+		opt(g)
+	}
+	return g
+}
+
+type nameMap map[string]*Class
+type renamer func(typ NameType, name string) string
 
 type NameType int
 
@@ -36,28 +55,22 @@ func RenameFunc(fn func(typ NameType, name string) string) Option {
 	}
 }
 
-func NewGenerator(opts ...Option) *Generator {
-	g := &Generator{
-		nameToIRI: map[string]string{},
-		nameMap:   nameMap{},
-		renamer: func(typ NameType, name string) string {
-			return ""
-		},
+func OutputFile(path string) Option {
+	return func(generator *Generator) {
+		generator.outputFile = strings.TrimSuffix(path, ".go")
 	}
-	for _, opt := range opts {
-		opt(g)
+}
+
+func PackageName(pkg string) Option {
+	return func(generator *Generator) {
+		generator.pkgName = pkg
 	}
-	return g
 }
 
 const ldImport = "github.com/kzantow/go-ld"
 
-func (g *Generator) Generate(ctx *Context, pkgName, file string) {
-	f := NewFile(pkgName)
-	f.ImportNames(map[string]string{
-		"time":   "time",
-		ldImport: "ld",
-	})
+func (g *Generator) Generate(ctx *Context) {
+	f := g.newCode()
 
 	totalTypes := 0
 	totalProps := 0
@@ -109,6 +122,8 @@ func (g *Generator) Generate(ctx *Context, pkgName, file string) {
 			)
 		}
 
+		g.appendNamedIndividuals(f, ctx, c.IRI)
+
 		// append the list type for this struct
 		if g.isObject(c.IRI) && !g.isEnum(c.IRI) {
 			g.appendListType(f, c)
@@ -128,8 +143,31 @@ func (g *Generator) Generate(ctx *Context, pkgName, file string) {
 		fmt.Println()
 	}
 
-	//_, _ = fmt.Fprintf(os.Stderr, "// Generated Code:\n%#v", f)
-	must(os.WriteFile(file, []byte(f.GoString()), 0777))
+	if g.outputFile != "" {
+		must(os.WriteFile(g.outputFile+".go", []byte(f.GoString()), 0777))
+	}
+
+	if g.outputValidations && g.outputFile != "" {
+		f = g.newCode()
+	}
+
+	g.appendValidations(f)
+	if g.outputFile != "" {
+		must(os.WriteFile(g.outputFile+"_validations.go", []byte(f.GoString()), 0777))
+	}
+
+	if g.outputFile == "" {
+		_, _ = fmt.Fprintf(os.Stdout, "// Generated:\n%#v", f.GoString())
+	}
+}
+
+func (g *Generator) newCode() *File {
+	f := NewFile(g.pkgName)
+	f.ImportNames(map[string]string{
+		"time":   "time",
+		ldImport: "ld",
+	})
+	return f
 }
 
 func (g *Generator) typeFields(c *Class) []Code {
@@ -176,7 +214,7 @@ func (g *Generator) isEnum(typeIRI string) bool {
 }
 
 func (g *Generator) isList(_ *Class, p *Property) bool {
-	return p.Max != 1
+	return p.MaxCount != 1
 }
 
 func (g *Generator) embedSupertypeOrID(c *Class) []Code {
@@ -235,7 +273,7 @@ func (g *Generator) fieldType(c *Class, p *Property) Code {
 		t = Qual(pkg, typ)
 	}
 	switch {
-	case !isObj && isList:
+	case !isObj && isList, isObj && isEnum && isList:
 		t = Index().Add(t)
 	}
 	return t
@@ -451,6 +489,107 @@ func (g *Generator) isSubtypeOf(parent *Class, typ *Class) bool {
 		return g.isSubtypeOf(parent, next)
 	}
 	return false
+}
+
+func (g *Generator) appendValidations(f *File) {
+	f.Id(`
+import (
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+)
+
+type ValidationError struct {
+	Path []string
+	Err error
+}
+
+func (v ValidationError) String() string {
+	return strings.Join(v.Path, ".") + ": " + v.Err.Error()
+}
+
+func (v ValidationError) Error() string {
+	return v.String()
+}
+
+func newValidationError(path []string, err error) ValidationError {
+	return ValidationError{
+		Path: path,
+		Err: err,
+	}
+}
+
+type validator interface {
+	Validate(visited map[any]struct{}, path ...string) []ValidationError
+}
+
+func validateInValues(path []string, value string, valid ...string) []ValidationError {
+	if slices.Contains(valid, value) {
+		return nil
+	}
+	return []ValidationError{newValidationError(path, fmt.Errorf("invalid value: '%v', expected: %v", value, valid))}
+}
+`)
+	for _, name := range keys(g.nameToIRI) {
+		iri := g.nameToIRI[name]
+		c := g.nameMap[iri]
+
+		f.Func().Params(Id("o").Op("*").Id(g.className(iri))).Id("Validate").Params(Id("visited").Id("map[any]struct{}"), Id("path").Op("...").Op("string")).Index().Id("ValidationError").BlockFunc(func(f *Group) {
+			for _, prop := range c.Properties {
+				for _, validation := range prop.Validations {
+					switch v := validation.(type) {
+					case AllowedIRIValidation:
+						f.Comment("AllowedIRI: " + string(v))
+					case MinIntValidation:
+						f.Comment("MinIntValidation: " + fmt.Sprintf("%v", v))
+					case MatchPatternValidation:
+						f.Comment("MatchPattern: " + string(v))
+					}
+				}
+			}
+			f.Return(Nil())
+		})
+	}
+}
+
+func (g *Generator) appendNamedIndividuals(f *File, ctx *Context, typeIRI string) {
+	var sortedNamed []*Individual
+	for _, ni := range ctx.NamedIndividuals {
+		if ni.TypeIRI == typeIRI {
+			sortedNamed = append(sortedNamed, ni)
+		}
+	}
+	slices.SortFunc(sortedNamed, func(a, b *Individual) int {
+		return strings.Compare(a.IRI, b.IRI)
+	})
+	for _, ni := range sortedNamed {
+		label := cleanText(ni.Label)
+		if label == "" {
+			parts := strings.Split(ni.IRI, "/")
+			label = parts[len(parts)-1]
+		}
+		c := g.nameMap[typeIRI]
+		typeName := g.className(typeIRI)
+		varName := typeName + "_" + upperFirst(label)
+		if ni.Comment != "" {
+			f.Comment(prefixWith(ni.Comment, varName))
+		}
+		f.Var().Id(varName).Op("=").Id(typeName).Block(
+			g.setId(c, ni.IRI),
+		)
+	}
+}
+
+func (g *Generator) setId(c *Class, iri string) Code {
+	if c.ParentIRI != "" {
+		parent := g.nameMap[c.ParentIRI]
+		typeName := g.className(parent.IRI)
+		return Id(typeName).Op(":").Id(typeName).Block(
+			g.setId(parent, iri),
+		).Op(",")
+	}
+	return Id(ld.GoIdField).Op(":").Lit(iri).Op(",")
 }
 
 func upperFirst(part string) string {

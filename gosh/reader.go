@@ -18,25 +18,25 @@ func ParseSHACL(url string) *Context {
 	ctx := NewContext(cleanIRI(url))
 
 	var allUsedProps []*rdf2go.Triple
-	used := func(triple ...*rdf2go.Triple) {
-		allUsedProps = append(allUsedProps, triple...)
+	used := func(triples ...*rdf2go.Triple) []*rdf2go.Triple {
+		allUsedProps = append(allUsedProps, triples...)
+		return triples
 	}
 
-	classes := g.All(nil, rdfType, owlClass)
+	classes := used(g.All(nil, rdfType, owlClass)...)
 	for _, class := range sorted(classes, bySubject) {
 		log("Class", class)
 
 		out := &Class{
 			IRI:     cleanIRI(class.Subject.String()),
-			Comment: getComment(g, class.Subject, used),
+			Comment: getComment(used, g, class.Subject),
 		}
 		if _, ok := ctx.Classes[out.IRI]; ok {
 			panic("duplicate type definition: " + out.IRI)
 		}
 		ctx.Classes[out.IRI] = out
 
-		superclass := oneOptional(g.All(class.Subject, rdfSubclassOf, nil))
-		used(superclass)
+		superclass := oneOptional(used, g.All(class.Subject, rdfSubclassOf, nil))
 		if superclass != nil {
 			out.ParentIRI = cleanIRI(superclass.Object.String())
 			log("  extends: ", out.ParentIRI)
@@ -44,11 +44,11 @@ func ParseSHACL(url string) *Context {
 
 		// TODO what does this mean?: Predicate: <http://www.w3.org/ns/shacl#nodeKind>, Object: <http://www.w3.org/ns/shacl#IRI>
 
-		properties := g.All(class.Subject, shaclProperty, nil)
-		used(properties...)
+		properties := used(g.All(class.Subject, shaclProperty, nil)...)
 
 		for _, property := range sorted(properties, byObject) {
-			path := oneRequired(g.All(property.Object, shaclPath, nil))
+			path := oneRequired(used, g.All(property.Object, shaclPath, nil))
+			used(path)
 			log("  property:", class.Subject.String(), "path", path.Object.String())
 
 			if path.Object.Equal(rdfType) {
@@ -58,61 +58,93 @@ func ParseSHACL(url string) *Context {
 
 			prop := &Property{
 				IRI:     cleanIRI(path.Object.String()),
-				Comment: getComment(g, path.Object, used),
+				Comment: getComment(used, g, path.Object),
 			}
 			out.Properties = append(out.Properties, prop)
 
 			// get the data type
-			typeIRI := oneOptional(g.All(property.Object, shaclClass, nil))
+			typeIRI := oneOptional(used, g.All(property.Object, shaclClass, nil))
 			if typeIRI == nil {
-				typeIRI = oneOptional(g.All(property.Object, shaclDatatype, nil))
+				typeIRI = oneOptional(used, g.All(property.Object, shaclDatatype, nil))
 			}
-			used(typeIRI)
 			if typeIRI != nil {
 				prop.TypeIRI = cleanIRI(typeIRI.Object.String())
 			} else {
 				panic("No type IRI for: " + property.Object.String())
 			}
 
-			minCount := oneOptional(g.All(property.Object, shaclMinCount, nil))
+			minCount := oneOptional(used, g.All(property.Object, shaclMinCount, nil))
 			used(minCount)
 			if minCount != nil {
-				prop.Min = parseIntegerValue(minCount)
+				prop.MinCount = parseIntegerValue(minCount)
 			}
 
-			maxCount := oneOptional(g.All(property.Object, shaclMaxCount, nil))
-			used(maxCount)
+			maxCount := oneOptional(used, g.All(property.Object, shaclMaxCount, nil))
 			if maxCount != nil {
-				prop.Max = parseIntegerValue(maxCount)
+				prop.MaxCount = parseIntegerValue(maxCount)
+			} else {
+				prop.MaxCount = -1 // FIXME how is * represented?
 			}
 
-			allowedValues := oneOptional(g.All(property.Object, shaclIn, nil))
+			allowedValues := oneOptional(used, g.All(property.Object, shaclIn, nil))
 			var usedPropertyNodes []*rdf2go.Triple
 			for allowedValues != nil {
 				usedPropertyNodes = append(usedPropertyNodes, allowedValues)
-				validation := oneOptional(g.All(allowedValues.Object, rdfFirst, nil))
+				validation := oneOptional(used, g.All(allowedValues.Object, rdfFirst, nil))
 				if validation != nil {
+					used(validation)
 					log("    validation:", nodeDisplay(validation))
-					prop.AllowedIRIs = append(prop.AllowedIRIs, cleanIRI(validation.Object.String()))
+					prop.Validations = append(prop.Validations, AllowedIRIValidation(validation.Object.String()))
 				}
-				allowedValues = oneOptional(g.All(allowedValues.Object, rdfRest, nil))
+				allowedValues = oneOptional(used, g.All(allowedValues.Object, rdfRest, nil))
 			}
 
-			allProps := g.All(property.Object, nil, nil)
-			for _, p := range sorted(allProps, byObject) {
-				if slices.Contains(append(usedPropertyNodes, path, property), p) {
-					continue
-				}
-				log("  ... extra prop prop:", p)
+			pattern := oneOptional(used, g.All(property.Object, shaclPattern, nil))
+			if pattern != nil {
+				prop.Validations = append(prop.Validations, MatchPatternValidation(cleanText(pattern.Object.String())))
 			}
+
+			//allProps := g.All(property.Object, nil, nil)
+			//for _, p := range sorted(allProps, byObject) {
+			//	if slices.Contains(append(usedPropertyNodes, path, property), p) {
+			//		continue
+			//	}
+			//	log("  ... extra prop prop:", p)
+			//}
 		}
 
-		allprops := g.All(class.Subject, nil, nil)
-		for _, p := range sorted(allprops, byObject) {
-			if slices.Contains(allUsedProps, p) {
+		//allprops := g.All(class.Subject, nil, nil)
+		//for _, p := range sorted(allprops, byObject) {
+		//	if slices.Contains(allUsedProps, p) {
+		//		continue
+		//	}
+		//	log("  ... unused class prop:", p)
+		//}
+
+	}
+
+	// read all the named individuals
+	namedIndividuals := used(g.All(nil, rdfType, owlNamedIndividual)...)
+	for _, namedIndividual := range sorted(namedIndividuals, bySubject) {
+		entries := used(g.All(namedIndividual.Subject, rdfType, nil)...)
+		for _, entry := range entries {
+			if entry == namedIndividual {
 				continue
 			}
-			log("  ... unused class prop:", p)
+			typeIRI := cleanIRI(entry.Object.String())
+			if c := ctx.Classes[typeIRI]; c != nil {
+				label := ""
+				if l := oneOptional(used, g.All(namedIndividual.Subject, rdfLabel, nil)); l != nil {
+					label = cleanText(l.Object.String())
+				}
+				ni := Individual{
+					IRI:     cleanIRI(namedIndividual.Subject.String()),
+					Label:   label,
+					Comment: getComment(used, g, namedIndividual.Subject),
+					TypeIRI: typeIRI,
+				}
+				ctx.NamedIndividuals = append(ctx.NamedIndividuals, &ni)
+			}
 		}
 	}
 
@@ -121,7 +153,7 @@ func ParseSHACL(url string) *Context {
 		if slices.Contains(allUsedProps, p) {
 			continue
 		}
-		log("  ... unused class prop:", p)
+		log("  ... unused triple:", p)
 	}
 
 	return ctx
@@ -134,7 +166,7 @@ func NewContext(url string) *Context {
 	}
 }
 
-func getComment(g *rdf2go.Graph, subject rdf2go.Term, used func(triple ...*rdf2go.Triple)) string {
+func getComment(used usedFunc, g *rdf2go.Graph, subject rdf2go.Term) string {
 	allComments := g.All(subject, rdfComment, nil)
 	var comment *rdf2go.Triple
 	for _, c := range allComments {
@@ -166,12 +198,14 @@ func parseIntegerValue(count *rdf2go.Triple) int {
 }
 
 var (
-	rdfType       = rdf2go.NewResource("http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
-	rdfFirst      = rdf2go.NewResource("http://www.w3.org/1999/02/22-rdf-syntax-ns#first")
-	rdfRest       = rdf2go.NewResource("http://www.w3.org/1999/02/22-rdf-syntax-ns#rest")
-	rdfSubclassOf = rdf2go.NewResource("http://www.w3.org/2000/01/rdf-schema#subClassOf")
-	rdfComment    = rdf2go.NewResource("http://www.w3.org/2000/01/rdf-schema#comment")
-	owlClass      = rdf2go.NewResource("http://www.w3.org/2002/07/owl#Class")
+	rdfType            = rdf2go.NewResource("http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
+	rdfFirst           = rdf2go.NewResource("http://www.w3.org/1999/02/22-rdf-syntax-ns#first")
+	rdfRest            = rdf2go.NewResource("http://www.w3.org/1999/02/22-rdf-syntax-ns#rest")
+	rdfSubclassOf      = rdf2go.NewResource("http://www.w3.org/2000/01/rdf-schema#subClassOf")
+	rdfComment         = rdf2go.NewResource("http://www.w3.org/2000/01/rdf-schema#comment")
+	rdfLabel           = rdf2go.NewResource("http://www.w3.org/2000/01/rdf-schema#label")
+	owlClass           = rdf2go.NewResource("http://www.w3.org/2002/07/owl#Class")
+	owlNamedIndividual = rdf2go.NewResource("http://www.w3.org/2002/07/owl#NamedIndividual")
 	//owlObjectProperty = rdf2go.NewResource("http://www.w3.org/2002/07/owl#ObjectProperty")
 	//shaclNodeShape    = rdf2go.NewResource("http://www.w3.org/ns/shacl#NodeShape")
 	//shaclNodeKind     = rdf2go.NewResource("http://www.w3.org/ns/shacl#nodeKind")
@@ -182,4 +216,5 @@ var (
 	shaclIn       = rdf2go.NewResource("http://www.w3.org/ns/shacl#in")
 	shaclMinCount = rdf2go.NewResource("http://www.w3.org/ns/shacl#minCount")
 	shaclMaxCount = rdf2go.NewResource("http://www.w3.org/ns/shacl#maxCount")
+	shaclPattern  = rdf2go.NewResource("http://www.w3.org/ns/shacl#pattern")
 )

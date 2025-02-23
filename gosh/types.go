@@ -1,12 +1,20 @@
 package gosh
 
 type Context struct {
-	IRI     string
-	Classes map[string]*Class // classes by IRI
+	IRI              string
+	Classes          map[string]*Class // classes by IRI
+	NamedIndividuals []*Individual
 }
 
 func (c Context) Class(iri string) *Class {
 	return c.Classes[iri]
+}
+
+type Individual struct {
+	IRI     string
+	TypeIRI string
+	Label   string
+	Comment string
 }
 
 type Class struct {
@@ -22,7 +30,13 @@ type Property struct {
 	GoName      string
 	Comment     string
 	TypeIRI     string
-	Min         int
-	Max         int
-	AllowedIRIs []string
+	MinCount    int
+	MaxCount    int
+	Validations []any
 }
+
+type AllowedIRIValidation string
+
+type MinIntValidation int
+
+type MatchPatternValidation string

@@ -11,25 +11,33 @@ import (
 	"github.com/deiu/rdf2go"
 )
 
-func oneOptional(all []*rdf2go.Triple) *rdf2go.Triple {
+type usedFunc func(...*rdf2go.Triple) []*rdf2go.Triple
+
+func oneOptional(used usedFunc, all []*rdf2go.Triple) *rdf2go.Triple {
 	if len(all) > 1 {
 		panic(fmt.Errorf("too many results for: %#v", all))
 	}
 	if len(all) > 0 {
+		used(all[0])
 		return all[0]
 	}
 	return nil
 }
 
-func oneRequired(all []*rdf2go.Triple) *rdf2go.Triple {
+func oneRequired(used usedFunc, all []*rdf2go.Triple) *rdf2go.Triple {
 	if len(all) != 1 {
 		panic(fmt.Errorf("required exactly 1 result for: %#v", all))
 	}
+	used(all[0])
 	return all[0]
 }
 
 func cleanIRI(iri string) string {
 	return strings.Trim(iri, "<>")
+}
+
+func cleanText(iri string) string {
+	return strings.Trim(iri, "\"")
 }
 
 var LogEnabled = os.Getenv("GOSH_LOG") == "true"
