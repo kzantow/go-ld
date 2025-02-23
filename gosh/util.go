@@ -1,0 +1,105 @@
+package gosh
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"slices"
+	"strings"
+
+	"github.com/deiu/rdf2go"
+)
+
+func oneOptional(all []*rdf2go.Triple) *rdf2go.Triple {
+	if len(all) > 1 {
+		panic(fmt.Errorf("too many results for: %#v", all))
+	}
+	if len(all) > 0 {
+		return all[0]
+	}
+	return nil
+}
+
+func oneRequired(all []*rdf2go.Triple) *rdf2go.Triple {
+	if len(all) != 1 {
+		panic(fmt.Errorf("required exactly 1 result for: %#v", all))
+	}
+	return all[0]
+}
+
+func cleanIRI(iri string) string {
+	return strings.Trim(iri, "<>")
+}
+
+var LogEnabled = os.Getenv("GOSH_LOG") == "true"
+
+func log(msg ...any) {
+	if !LogEnabled {
+		return
+	}
+	for _, m := range msg {
+		switch m := m.(type) {
+		case *rdf2go.Triple:
+			_, _ = fmt.Fprint(os.Stderr, nodeDisplay(m))
+		default:
+			_, _ = fmt.Fprint(os.Stderr, m)
+		}
+		_, _ = fmt.Fprint(os.Stderr, " ")
+	}
+	_, _ = fmt.Fprintln(os.Stderr)
+}
+
+func nodeDisplay(triple *rdf2go.Triple) string {
+	return join("Subject: ", triple.Subject.String(), ", Predicate: ", triple.Predicate.String(), ", Object: ", triple.Object.String())
+}
+
+func join(parts ...string) string {
+	return strings.Join(parts, "")
+}
+
+func bySubject(t *rdf2go.Triple) string {
+	return t.Subject.String()
+}
+
+func byObject(t *rdf2go.Triple) string {
+	return t.Object.String()
+}
+
+func sorted(values []*rdf2go.Triple, by func(triple *rdf2go.Triple) string) []*rdf2go.Triple {
+	slices.SortFunc(values, func(a, b *rdf2go.Triple) int {
+		if a == nil && b == nil {
+			return 0
+		}
+		if a == nil {
+			return 1
+		}
+		if b == nil {
+			return -1
+		}
+		return strings.Compare(by(a), by(b))
+	})
+	return values
+}
+
+func fetch(definitions string) []byte {
+	spdxTTLRes := get(http.Get(definitions))
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			_, _ = os.Stderr.Write([]byte(fmt.Sprint(err)))
+		}
+	}(spdxTTLRes.Body)
+	return get(io.ReadAll(spdxTTLRes.Body))
+}
+
+func get[T any](t T, err error) T {
+	must(err)
+	return t
+}
+
+func must(err error) {
+	if err != nil {
+		panic(err)
+	}
+}
