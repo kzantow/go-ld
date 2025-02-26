@@ -162,7 +162,7 @@ func ParseSHACL(url string) *Context {
 func NewContext(url string) *Context {
 	return &Context{
 		IRI:     url,
-		Classes: nameMap{},
+		Classes: map[string]*Class{},
 	}
 }
 

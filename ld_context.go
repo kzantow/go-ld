@@ -15,77 +15,78 @@ import (
 // Type is a 0-size data holder property type for type-level linked data
 type Type struct{}
 
-type TypeAlias struct {
-	Type    any
-	Aliases map[string]string
-}
-
 // Context is the holder for all known LD contexts and required definitions
 type Context map[string]*serializationContext
 
-// Register registers types and aliases to be used when serializing/deserializing documents
-func (c Context) Register(contextUrl string, typeAliases []TypeAlias, types ...any) Context {
-	c = c.registerTypes(contextUrl, types...)
-	c = c.registerTypeAliases(contextUrl, typeAliases)
+// Merge allows convenient merging of multiple contexts together
+func (c Context) Merge(ctx Context) Context {
+	for k, v := range ctx {
+		if _, ok := c[k]; ok {
+			panic("Context key already defined: " + k)
+		}
+		c[k] = v
+	}
 	return c
 }
 
-// registerTypes registers types to be used when serializing/deserializing documents
-func (c Context) registerTypes(contextUrl string, types ...any) Context {
+// Register registers types and aliases to be used when serializing/deserializing documents
+func (c Context) Register(contextUrl string, ldContext map[string]any, types ...any) Context {
 	ctx := c.getContext(contextUrl)
+	c.registerContextAliases(ctx, ldContext)
 	for _, typ := range types {
 		ctx.registerType(typ)
 	}
-	c.registerContextAliases(contextUrl, map[string]string{"@type": "type"}) // FIXME this should come from the LD context
 	return c
 }
 
 // registerContextAliases registers compact name aliases for the given IRIs in the given context
-func (c Context) registerContextAliases(contextUrl string, iriToAlias map[string]string) Context {
-	ctx := c.getContext(contextUrl)
-	for iri, alias := range iriToAlias {
-		if ctx.aliasToIri[alias] != "" {
-			panic("duplicate alias set globally: " + alias + "; iri: " + iri)
-		}
-		ctx.aliasToIri[alias] = iri
-		if ctx.iriToAlias[iri] != "" {
-			panic("duplicate iri alias set globally: " + iri + " alias; " + alias)
-		}
-		ctx.iriToAlias[iri] = alias
+func (c Context) registerContextAliases(ctx *serializationContext, ldContext map[string]any) {
+	subContext, _ := ldContext[JsonContextProp].(map[string]any)
+	if subContext != nil {
+		c.registerContextAliases(ctx, subContext)
 	}
-	return c
+	for alias, v := range ldContext {
+		if alias == JsonContextProp {
+			continue
+		}
+		switch v := v.(type) {
+		case string:
+			c.registerContextAlias(ctx, v, alias)
+		case map[string]any:
+			iri, _ := v[JsonIdProp].(string)
+			if iri != "" {
+				c.registerContextAlias(ctx, iri, alias)
+			}
+			// should this be checked? if v[JsonTypeProp] == JsonVocabProp {
+			subContext, _ = v[JsonContextProp].(map[string]any)
+			if subContext != nil {
+				contextPrefix, _ := subContext[JsonVocabProp].(string)
+				ctx.aliasContext[alias] = contextPrefix
+			}
+		}
+	}
 }
 
-// registerAliases registers compact name aliases for the given IRIs in the context of the given type
-func (c Context) registerTypeAliases(contextUrl string, typeAliases []TypeAlias) Context {
-	ctx := c.getContext(contextUrl)
-	for _, typeAlias := range typeAliases {
-		t := baseType(reflect.TypeOf(typeAlias.Type))
-		tc := ctx.typeToContext[t]
-		if tc == nil {
-			panic("type not found in context, ensure you have passed the type to Register: " + typeName(t))
-		}
-		c.registerContextAliases(contextUrl, typeAlias.Aliases)
-		//for iri, alias := range typeAlias.Aliases {
-		//	if tc.aliasToIri[alias] != "" {
-		//		panic("duplicate alias set for type: " + alias + "; iri: " + iri)
-		//	}
-		//	tc.aliasToIri[alias] = iri
-		//	if tc.iriToAlias[iri] != "" {
-		//		panic("duplicate iri alias set for type: " + iri + "; iri: " + alias)
-		//	}
-		//	tc.iriToAlias[iri] = alias
-		//}
+// registerContextAlias registers compact name aliases for the given IRIs in the given context
+func (c Context) registerContextAlias(ctx *serializationContext, iri, alias string) {
+	if ctx.aliasToIri[alias] != "" {
+		panic("duplicate alias set globally: " + alias + "; iri: " + iri + "; existing: " + ctx.aliasToIri[alias])
 	}
-	return c
+	ctx.aliasToIri[alias] = iri
+	if ctx.iriToAlias[iri] != "" {
+		panic("duplicate iri alias set globally: " + iri + "; alias: " + alias + "; existing: " + ctx.iriToAlias[iri])
+	}
+	ctx.iriToAlias[iri] = alias
 }
 
 func (c Context) getContext(contextUrl string) *serializationContext {
 	ctx := c[contextUrl]
 	if ctx == nil {
 		ctx = &serializationContext{
-			contextUrl:    contextUrl,
+			contextUrl: contextUrl,
+			//ldContext:     map[string]any{},
 			aliasToIri:    map[string]string{},
+			aliasContext:  map[string]string{},
 			iriToAlias:    map[string]string{},
 			iriToType:     map[string]*typeContext{},
 			typeToContext: map[reflect.Type]*typeContext{},
@@ -128,8 +129,8 @@ func (c Context) ToMaps(o ...any) (values map[string]any, errors error) {
 	}
 
 	return map[string]any{
-		ldContextProp: context.contextUrl,
-		ldGraphProp:   builder.toGraph(),
+		JsonContextProp: context.contextUrl,
+		JsonGraphProp:   builder.toGraph(),
 	}, nil
 }
 
@@ -149,15 +150,15 @@ func (c Context) FromMaps(values map[string]any) ([]any, error) {
 	var errs error
 	var graph []any
 
-	context, _ := values[ldContextProp].(string)
+	context, _ := values[JsonContextProp].(string)
 	currentContext := c[context]
 	if currentContext == nil {
-		return nil, fmt.Errorf("unknown %s: '%s' must be in %v", ldContextProp, context, maps.Keys(c))
+		return nil, fmt.Errorf("unknown %s: '%s' must be in %v", JsonContextProp, context, maps.Keys(c))
 	}
 
-	nodes, _ := values[ldGraphProp].([]any)
+	nodes, _ := values[JsonGraphProp].([]any)
 	if nodes == nil {
-		return nil, fmt.Errorf("%s not found", ldGraphProp)
+		return nil, fmt.Errorf("%s not found", JsonGraphProp)
 	}
 
 	// one pass to create all the instances
@@ -211,9 +212,7 @@ func (c Context) getOrCreateInstance(currentContext *serializationContext, insta
 		case reflect.Struct:
 			instance = reflect.New(expectedType)
 			instance = instance.Elem()
-			err := c.setStructProps(currentContext, instances, instance, map[string]any{
-				ldIDProp: incoming,
-			})
+			err := c.setInstanceByIRI(currentContext, instances, instance, incoming)
 			return instance, err
 		case reflect.Interface:
 			// an IRI with an interface is a reference to an unknown type, so use the closest type
@@ -224,9 +223,7 @@ func (c Context) getOrCreateInstance(currentContext *serializationContext, insta
 				if !instance.Type().AssignableTo(expectedType) {
 					instance = instance.Elem()
 				}
-				err := c.setStructProps(currentContext, instances, instance, map[string]any{
-					ldIDProp: incoming,
-				})
+				err := c.setInstanceByIRI(currentContext, instances, instance, incoming)
 				return instance, err
 			}
 			return emptyValue, fmt.Errorf("unable to determine external reference type while populating %v for IRI reference: %v", typeName(expectedType), incoming)
@@ -246,6 +243,12 @@ func convertTo(incoming any, typ reflect.Type) reflect.Value {
 	return emptyValue
 }
 
+func (c Context) setInstanceByIRI(ctx *serializationContext, instances map[string]reflect.Value, instance reflect.Value, incoming string) error {
+	return c.setStructProps(ctx, instances, instance, map[string]any{
+		JsonIdProp: incoming,
+	})
+}
+
 func (c Context) findById(_ *serializationContext, instances map[string]reflect.Value, incoming string) reflect.Value {
 	inst, ok := instances[incoming]
 	if ok {
@@ -255,26 +258,26 @@ func (c Context) findById(_ *serializationContext, instances map[string]reflect.
 }
 
 func (c Context) getOrCreateFromMap(currentContext *serializationContext, instances map[string]reflect.Value, incoming map[string]any) (reflect.Value, error) {
-	typ, ok := incoming[ldTypeProp].(string)
-	if !ok && currentContext.iriToAlias[ldTypeProp] != "" {
-		typ, ok = incoming[currentContext.iriToAlias[ldTypeProp]].(string)
+	typ, ok := incoming[JsonTypeProp].(string)
+	if !ok && currentContext.iriToAlias[JsonTypeProp] != "" {
+		typ, ok = incoming[currentContext.iriToAlias[JsonTypeProp]].(string)
 	}
 	if !ok {
 		return emptyValue, fmt.Errorf("not a string")
 	}
 
-	t, ok := currentContext.iriToType[typ]
+	tc, ok := currentContext.iriToType[typ]
 	if !ok {
 		return emptyValue, fmt.Errorf("don't have type: %v", typ)
 	}
 
-	id, _ := incoming[ldIDProp].(string)
-	if id == "" && t.idProp != "" {
-		id, _ = incoming[t.idProp].(string)
+	id, _ := incoming[JsonIdProp].(string)
+	if id == "" && tc.ctx.iriToAlias[JsonIdProp] != "" {
+		id, _ = incoming[tc.ctx.iriToAlias[JsonIdProp]].(string)
 	}
 	inst, ok := instances[id]
 	if !ok {
-		inst = reflect.New(baseType(t.typ)) // New(T) returns *T
+		inst = reflect.New(baseType(tc.typ)) // New(T) returns *T
 		if id != "" {
 			// only set instance references when an ID is provided
 			instances[id] = inst
@@ -294,7 +297,7 @@ func (c Context) fill(currentContext *serializationContext, instances map[string
 		}
 		// should be an incoming ID if string
 		return c.setValue(currentContext, instances, instance, map[string]any{
-			ldIDProp: incoming,
+			JsonIdProp: incoming,
 		})
 	case map[string]any:
 		return c.setStructProps(currentContext, instances, instance, incoming)
@@ -335,7 +338,7 @@ func (c Context) setValue(currentContext *serializationContext, instances map[st
 		case string:
 			// named individuals just need an object with the iri set
 			return c.setStructProps(currentContext, instances, target, map[string]any{
-				ldIDProp: incoming,
+				JsonIdProp: incoming,
 			})
 		}
 	case reflect.Interface, reflect.Pointer:
@@ -368,7 +371,7 @@ func (c Context) setStructProps(currentContext *serializationContext, instances 
 	if typ.Kind() != reflect.Struct {
 		return fmt.Errorf("unable to set struct properties on non-struct type: %#v", instance.Interface())
 	}
-	tc := currentContext.typeToContext[typ]
+	//tc := currentContext.typeToContext[typ]
 	for i := 0; i < typ.NumField(); i++ {
 		f := typ.Field(i)
 		if skipField(f) {
@@ -385,13 +388,13 @@ func (c Context) setStructProps(currentContext *serializationContext, instances 
 			}
 		}
 
-		propIRI := f.Tag.Get(propIriTag)
+		propIRI := f.Tag.Get(GoIriTagName)
 		if propIRI == "" {
 			continue
 		}
 		incomingVal, ok := incoming[propIRI]
 		if !ok {
-			compactIRI := f.Tag.Get(propIriCompactTag)
+			compactIRI := currentContext.iriToAlias[propIRI]
 			if compactIRI != "" {
 				incomingVal, ok = incoming[compactIRI]
 			}
@@ -400,15 +403,10 @@ func (c Context) setStructProps(currentContext *serializationContext, instances 
 			continue
 		}
 		// don't set blank node IDs, these will be regenerated on output
-		if propIRI == ldIDProp {
-			if tc != nil {
-				if str, ok := incomingVal.(string); ok {
-					//if fullIRI, ok := tc.aliasToIri[str]; ok {
-					//	incomingVal = fullIRI
-					//} else
-					if fullIRI, ok := currentContext.aliasToIri[str]; ok {
-						incomingVal = fullIRI
-					}
+		if propIRI == JsonIdProp {
+			if str, ok := incomingVal.(string); ok {
+				if fullIRI, ok := currentContext.aliasToIri[str]; ok {
+					incomingVal = fullIRI
 				}
 			}
 			if isBlankNodeID(incomingVal) {
@@ -475,10 +473,9 @@ func (c Context) findExternalReferenceType(currentContext *serializationContext,
 
 func (c Context) typeContextForIri(iri string) *typeContext {
 	for _, ctx := range c {
-		for id, tc := range ctx.iriToType {
-			if strings.HasPrefix(iri, id) {
-				return tc
-			}
+		tc := ctx.iriToType[iri]
+		if tc != nil {
+			return tc
 		}
 	}
 	return nil
@@ -541,21 +538,10 @@ const (
 	JsonTypeProp    = "@type"
 	JsonContextProp = "@context"
 	JsonGraphProp   = "@graph"
+	JsonVocabProp   = "@vocab"
 	GoTypeField     = "_"
 	GoIdField       = "ID"
 	GoIriTagName    = "iri"
-)
-
-const (
-	ldIDProp          = JsonIdProp
-	ldTypeProp        = JsonTypeProp
-	ldContextProp     = JsonContextProp
-	ldGraphProp       = JsonGraphProp
-	typeIriTag        = GoIriTagName
-	typeIriCompactTag = "iri-compact"
-	propIriTag        = GoIriTagName
-	propIriCompactTag = "iri-compact"
-	propIsRequiredTag = "required"
 )
 
 var (
@@ -564,19 +550,19 @@ var (
 )
 
 type typeContext struct {
-	typ        reflect.Type
-	iri        string
-	compact    string
-	idProp     string
-	iriToAlias map[string]string
-	aliasToIri map[string]string
+	ctx     *serializationContext
+	typ     reflect.Type
+	iri     string
+	compact string
 }
 
 type serializationContext struct {
-	contextUrl    string
+	contextUrl string
+	//ldContext     map[string]any
 	iriToType     map[string]*typeContext
 	typeToContext map[reflect.Type]*typeContext
 	aliasToIri    map[string]string
+	aliasContext  map[string]string
 	iriToAlias    map[string]string
 }
 
@@ -592,38 +578,26 @@ func fieldByType[T any](t reflect.Type) (reflect.StructField, bool) {
 	return reflect.StructField{}, false
 }
 
-func (m *serializationContext) registerType(instancePointer any) {
+func (ctx *serializationContext) registerType(instancePointer any) {
 	t := reflect.TypeOf(instancePointer)
-	t = baseType(t) // types should be passed as pointers; we want the base types
+	t = baseType(t) // types may be passed as pointers, but we want the base types
 
-	tc := m.typeToContext[t]
+	tc := ctx.typeToContext[t]
 	if tc != nil {
 		return // already registered
 	}
 	tc = &typeContext{
+		ctx: ctx,
 		typ: t,
-		//iriToAlias: map[string]string{},
-		//aliasToIri: map[string]string{},
-		idProp: ldIDProp,
 	}
 	meta, ok := fieldByType[Type](t)
 	if ok {
-		tc.iri = meta.Tag.Get(typeIriTag)
-		tc.compact = meta.Tag.Get(typeIriCompactTag)
+		tc.iri = meta.Tag.Get(GoIriTagName)
+		tc.compact = ctx.iriToAlias[tc.iri]
 	}
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
-		if !isIdField(f) {
-			continue
-		}
-		compactIdProp := f.Tag.Get(typeIriCompactTag)
-		if compactIdProp != "" {
-			tc.idProp = compactIdProp
-		}
-	}
-	m.iriToType[tc.iri] = tc
-	m.iriToType[tc.compact] = tc
-	m.typeToContext[t] = tc
+	ctx.iriToType[tc.iri] = tc
+	//ctx.iriToType[tc.compact] = tc
+	ctx.typeToContext[t] = tc
 }
 
 // appendErr appends errors, flattening joined errors

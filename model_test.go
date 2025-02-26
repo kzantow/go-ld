@@ -15,17 +15,84 @@ type o = map[string]any // object
 type l = []any          // list
 type a = any            // any
 
+var testJsonLdContext = o{
+	"type":             "@type",
+	"spdxId":           "@id",
+	"spdx":             "https://spdx.org/rdf/3.0.1/terms/",
+	"software_Package": "https://spdx.org/rdf/3.0.1/terms/Software/Package",
+	"software_File":    "https://spdx.org/rdf/3.0.1/terms/Software/File",
+	"software_primaryPurpose": o{
+		"@context": o{
+			"@vocab": "https://spdx.org/rdf/3.0.1/terms/Software/SoftwarePurpose/",
+		},
+		"@id":   "https://spdx.org/rdf/3.0.1/terms/Software/primaryPurpose",
+		"@type": "@vocab",
+	},
+	"software_additionalPurpose": o{
+		"@context": o{
+			"@vocab": "https://spdx.org/rdf/3.0.1/terms/Software/SoftwarePurpose/",
+		},
+		"@id":   "https://spdx.org/rdf/3.0.1/terms/Software/additionalPurpose",
+		"@type": "@vocab",
+	},
+	"to": o{
+		"@id":   "https://spdx.org/rdf/3.0.1/terms/Core/to",
+		"@type": "@vocab",
+	},
+	"specVersion": o{
+		"@id":   "https://spdx.org/rdf/3.0.1/terms/Core/specVersion",
+		"@type": "http://www.w3.org/2001/XMLSchema#string",
+	},
+	"Element": "https://spdx.org/rdf/3.0.1/terms/Core/Element",
+	"element": o{
+		"@id":   "https://spdx.org/rdf/3.0.1/terms/Core/element",
+		"@type": "@vocab",
+	},
+	"name": o{
+		"@id":   "https://spdx.org/rdf/3.0.1/terms/Core/name",
+		"@type": "http://www.w3.org/2001/XMLSchema#string",
+	},
+	"/dev/null": "https://example.org/iri/file/dev/null",
+}
+
+type Document struct {
+	_        ld.Type     `iri:"https://spdx.org/rdf/3.0.1/terms/Core/Document"`
+	ID       string      `iri:"@id"`
+	Elements ElementList `iri:"https://spdx.org/rdf/3.0.1/terms/Core/element"`
+}
+
+type AnyElement interface {
+	asElement() *Element
+}
+
+type ElementList []AnyElement
+
+type Element struct {
+	_    ld.Type `iri:"https://spdx.org/rdf/3.0.1/terms/Core/Element"`
+	ID   string  `iri:"@id"`
+	Name string  `iri:"https://spdx.org/rdf/3.0.1/terms/Core/name"`
+}
+
+func (e *Element) asElement() *Element {
+	return e
+}
+
+type SoftwarePurpose struct {
+	_  ld.Type `iri:"https://spdx.org/rdf/3.0.1/terms/Software/SoftwarePurpose"`
+	ID string  `iri:"@id"`
+}
+
 type Package struct {
-	_    ld.Type `iri:"package"`
-	ID   string  `iri:"@id" iri-compact:"spdxId"`
-	Name string  `iri:"name"`
-	Size int64   `iri:"https://example.com/iri/size" iri-compact:"size"`
+	_ ld.Type `iri:"https://spdx.org/rdf/3.0.1/terms/Software/Package"`
+	Element
+	SoftwarePurpose    SoftwarePurpose   `iri:"https://spdx.org/rdf/3.0.1/terms/Software/primaryPurpose"`
+	AdditionalPurposes []SoftwarePurpose `iri:"https://spdx.org/rdf/3.0.1/terms/Software/primaryPurpose"`
 }
 
 type File struct {
-	_        ld.Type `iri:"file"`
-	ID       string  `iri:"@id"`
-	Contents string  `iri:"contents"`
+	_ ld.Type `iri:"file"`
+	Element
+	Contents string `iri:"contents"`
 }
 
 type Relationship struct {
@@ -42,6 +109,8 @@ type AnyRelationship interface {
 func (r *Relationship) asRelationship() *Relationship {
 	return r
 }
+
+var File_DevNull = File{Element: Element{ID: "/dev/null"}}
 
 // SubRelationship implements inheritance by embedding
 type SubRelationship struct {
@@ -75,14 +144,7 @@ func testGraph(t *testing.T, graph l) []any {
 
 func testContext() (ld.Context, string) {
 	contextURL := "test"
-	return ld.Context{}.Register(contextURL, []ld.TypeAlias{
-		{
-			Type: File{},
-			Aliases: map[string]string{
-				"https://example.org/iri/file/dev/null": "/dev/null",
-			},
-		},
-	},
+	return ld.Context{}.Register(contextURL, testJsonLdContext,
 		Package{},
 		File{},
 		Relationship{},

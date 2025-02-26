@@ -2,7 +2,9 @@ package ld
 
 import (
 	"fmt"
+	"github.com/davecgh/go-spew/spew"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 )
@@ -63,23 +65,28 @@ func (b *graphBuilder) toStructMap(v reflect.Value) (value any, err error) {
 		return nil, fmt.Errorf("struct does not have ld.Type metadata: %v", stringify(v))
 	}
 
-	iri := meta.Tag.Get(typeIriCompactTag)
-	if iri == "" {
-		iri = meta.Tag.Get(typeIriTag)
+	iri := meta.Tag.Get(GoIriTagName)
+	tc := b.ldc.typeContextForIri(iri)
+
+	if tc == nil {
+		context := b.findContext(t)
+		if context == nil {
+			panic("no context for type: " + stringify(t))
+		}
+		tc = context.typeToContext[t]
 	}
 
-	context := b.findContext(t)
-	tc := context.typeToContext[t]
-
-	typeProp := ldTypeProp
-	if context.iriToAlias[ldTypeProp] != "" {
-		typeProp = context.iriToAlias[ldTypeProp]
+	typeProp := JsonTypeProp
+	alias := tc.ctx.iriToAlias[JsonTypeProp]
+	if alias != "" {
+		typeProp = alias
 	}
+
 	out := map[string]any{
 		typeProp: iri,
 	}
 
-	id, hasValues, err := b.writeStructProperties(context, tc, v, out)
+	id, hasValues, err := b.writeStructProperties(tc.ctx, tc, v, out)
 	// if we _only_ have an ID set and no other values just output the ID
 	if err != nil {
 		return id, err
@@ -113,14 +120,10 @@ func (b *graphBuilder) writeStructProperties(context *serializationContext, tc *
 			continue
 		}
 
-		prop := f.Tag.Get(propIriCompactTag)
-		if prop == "" {
-			prop = f.Tag.Get(propIriTag)
-		}
-
 		fieldV := v.Field(i)
 
-		if !isRequired(f) && isEmpty(fieldV) {
+		isId := isIdField(f)
+		if !isId && !isRequired(f) && isEmpty(fieldV) {
 			continue
 		}
 
@@ -129,7 +132,7 @@ func (b *graphBuilder) writeStructProperties(context *serializationContext, tc *
 			return "", hasValues, err
 		}
 
-		if isIdField(f) {
+		if isId {
 			id, _ = val.(string)
 			if id == "" {
 				// if this struct does not have an ID set, and does not have multiple references,
@@ -139,16 +142,20 @@ func (b *graphBuilder) writeStructProperties(context *serializationContext, tc *
 					continue
 				}
 				val, _ = b.ensureID(v.Addr())
-			} else if tc != nil {
+			} else {
 				// compact named IRIs
-				if _, ok := tc.iriToAlias[id]; ok {
-					id = tc.iriToAlias[id]
-				} else if _, ok := context.iriToAlias[id]; ok {
-					id = context.iriToAlias[id]
+				if alias := context.iriToAlias[id]; alias != "" {
+					id = alias
 				}
 			}
 		} else {
 			hasValues = true
+		}
+
+		prop := f.Tag.Get(GoIriTagName)
+		alias := context.iriToAlias[prop]
+		if alias != "" {
+			prop = alias
 		}
 
 		out[prop] = val
@@ -158,7 +165,7 @@ func (b *graphBuilder) writeStructProperties(context *serializationContext, tc *
 }
 
 func isIdField(f reflect.StructField) bool {
-	return f.Tag.Get(propIriTag) == ldIDProp
+	return f.Tag.Get(GoIriTagName) == JsonIdProp
 }
 
 func isEmpty(v reflect.Value) bool {
@@ -166,11 +173,7 @@ func isEmpty(v reflect.Value) bool {
 }
 
 func isRequired(f reflect.StructField) bool {
-	if isIdField(f) {
-		return true
-	}
-	required := f.Tag.Get(propIsRequiredTag)
-	return required != "" && !strings.EqualFold(required, "false")
+	return slices.Contains(strings.Split(f.Tag.Get("json"), ","), "omitempty")
 }
 
 var timeTimeType = reflect.TypeOf(time.Time{})
@@ -338,13 +341,14 @@ func refCountR(find reflect.Value, visited map[reflect.Value]struct{}, v reflect
 }
 
 func stringify(o any) string {
-	if v, ok := o.(reflect.Value); ok {
-		if !v.IsValid() {
-			return "invalid value"
-		}
-		if !v.IsZero() && v.CanInterface() {
-			o = v.Interface()
-		}
-	}
-	return fmt.Sprintf("%#v", o)
+	return spew.Sdump(o)
+	//if v, ok := o.(reflect.Value); ok {
+	//	if !v.IsValid() {
+	//		return "invalid value"
+	//	}
+	//	if !v.IsZero() && v.CanInterface() {
+	//		o = v.Interface()
+	//	}
+	//}
+	//return fmt.Sprintf("%#v", o)
 }

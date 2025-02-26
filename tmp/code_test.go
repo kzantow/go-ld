@@ -1,4 +1,4 @@
-package v3_0_1_test
+package v3_0_test
 
 import (
 	"fmt"

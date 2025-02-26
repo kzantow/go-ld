@@ -19,8 +19,8 @@ func Test_decode(t *testing.T) {
 				o{"@type": "relationship", "from": "file-1", "to": l{"pkg-1"}},
 			},
 			want: func() a {
-				p := &Package{ID: "pkg-1", Name: "pkg 1"}
-				f := &File{ID: "file-1", Contents: "file 1"}
+				p := &Package{Element: Element{ID: "pkg-1", Name: "pkg 1"}}
+				f := &File{Element: Element{ID: "file-1"}, Contents: "file 1"}
 				r := &Relationship{From: f, To: l{p}}
 				return l{p, f, r}
 			},
@@ -30,10 +30,7 @@ func Test_decode(t *testing.T) {
 				"/dev/null", // named individual
 			},
 			want: func() a {
-				p := &Package{ID: "pkg-1", Name: "pkg 1"}
-				f := &File{ID: "file-1", Contents: "file 1"}
-				r := &Relationship{From: f, To: l{p}}
-				return l{p, f, r}
+				return l{&File_DevNull}
 			},
 		},
 	}

@@ -1,23 +1,27 @@
 package gosh
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 
 	. "github.com/dave/jennifer/jen"
 	"github.com/gertd/go-pluralize"
 	"github.com/kzantow/go-ld"
+	"mvdan.cc/gofumpt/format"
 )
 
 type Generator struct {
 	pkgName           string
+	contexts          map[string]map[string]any
 	outputFile        string
 	outputValidations bool
 	nameToIRI         map[string]string
-	nameMap
-	renamer
+	iriToType         map[string]*Class
+	renameFunc        renameFunc
 }
 
 func NewGenerator(opts ...Option) *Generator {
@@ -25,8 +29,8 @@ func NewGenerator(opts ...Option) *Generator {
 		pkgName:           "model",
 		outputValidations: true,
 		nameToIRI:         map[string]string{},
-		nameMap:           nameMap{},
-		renamer: func(typ NameType, name string) string {
+		iriToType:         map[string]*Class{},
+		renameFunc: func(typ NameType, name string) string {
 			return ""
 		},
 	}
@@ -36,22 +40,21 @@ func NewGenerator(opts ...Option) *Generator {
 	return g
 }
 
-type nameMap map[string]*Class
-type renamer func(typ NameType, name string) string
+type renameFunc func(typ NameType, name string) string
 
 type NameType int
 
 const (
 	NameTypeType NameType = iota
 	NameTypeField
-	NameTypePluralize
+	NameTypeFunc
 )
 
 type Option func(*Generator)
 
 func RenameFunc(fn func(typ NameType, name string) string) Option {
 	return func(generator *Generator) {
-		generator.renamer = fn
+		generator.renameFunc = fn
 	}
 }
 
@@ -64,6 +67,18 @@ func OutputFile(path string) Option {
 func PackageName(pkg string) Option {
 	return func(generator *Generator) {
 		generator.pkgName = pkg
+	}
+}
+
+func JsonLDContext(url string) Option {
+	return func(generator *Generator) {
+		if generator.contexts == nil {
+			generator.contexts = map[string]map[string]any{}
+		}
+		contents := fetch(url)
+		var ctx map[string]any
+		must(json.Unmarshal(contents, &ctx))
+		generator.contexts[url] = ctx
 	}
 }
 
@@ -81,7 +96,7 @@ func (g *Generator) Generate(ctx *Context) {
 		renamed := g.className(c.IRI)
 		c.GoName = renamed
 		g.nameToIRI[renamed] = c.IRI
-		g.nameMap[c.IRI] = c
+		g.iriToType[c.IRI] = c
 
 		totalProps += len(c.Properties)
 	}
@@ -98,7 +113,7 @@ func (g *Generator) Generate(ctx *Context) {
 	// sort output alphabetically by type name, the names have already been replaced
 	for _, name := range keys(g.nameToIRI) {
 		iri := g.nameToIRI[name]
-		c := g.nameMap[iri]
+		c := g.iriToType[iri]
 
 		if !g.isEnum(c.IRI) {
 			f.Type().Id(interfacePrefix + name).Interface(
@@ -139,12 +154,13 @@ func (g *Generator) Generate(ctx *Context) {
 	// append utilities, like typeIter
 	g.appendUtils(f)
 
-	for i := 0; i < 10; i++ {
-		fmt.Println()
-	}
+	// append context registration
+	g.appendContextRegistration(f)
+
+	fmt.Println()
 
 	if g.outputFile != "" {
-		must(os.WriteFile(g.outputFile+".go", []byte(f.GoString()), 0777))
+		must(os.WriteFile(g.outputFile+".go", formattedSource(f), 0777))
 	}
 
 	if g.outputValidations && g.outputFile != "" {
@@ -159,6 +175,15 @@ func (g *Generator) Generate(ctx *Context) {
 	if g.outputFile == "" {
 		_, _ = fmt.Fprintf(os.Stdout, "// Generated:\n%#v", f.GoString())
 	}
+}
+
+func formattedSource(f *File) []byte {
+	src := []byte(f.GoString())
+	// fix the ld.Context{}.Register() argument list
+	src = regexp.MustCompile(`{}, `).ReplaceAll(src, []byte("{},\n"))
+	src = regexp.MustCompile(`{}\)`).ReplaceAll(src, []byte("{},\n)"))
+	src = get(format.Source(src, format.Options{}))
+	return src
 }
 
 func (g *Generator) newCode() *File {
@@ -198,7 +223,7 @@ func (g *Generator) propName(c *Class, p *Property) string {
 	if g.isList(c, p) {
 		name = g.pluralize(name)
 	}
-	renamed := g.renamer(NameTypeField, name)
+	renamed := g.renameFunc(NameTypeField, name)
 	if renamed != "" {
 		return renamed
 	}
@@ -206,7 +231,7 @@ func (g *Generator) propName(c *Class, p *Property) string {
 }
 
 func (g *Generator) isEnum(typeIRI string) bool {
-	c := g.nameMap[typeIRI]
+	c := g.iriToType[typeIRI]
 	if c != nil {
 		return c.ParentIRI == "" && len(c.Properties) == 0
 	}
@@ -220,7 +245,7 @@ func (g *Generator) isList(_ *Class, p *Property) bool {
 func (g *Generator) embedSupertypeOrID(c *Class) []Code {
 	var out []Code
 	if c.ParentIRI != "" {
-		p := g.nameMap[c.ParentIRI]
+		p := g.iriToType[c.ParentIRI]
 		if p == nil {
 			panic("Unknown parent: " + c.ParentIRI)
 		}
@@ -280,7 +305,7 @@ func (g *Generator) fieldType(c *Class, p *Property) Code {
 }
 
 func (g *Generator) isObject(iri string) bool {
-	return g.nameMap[iri] != nil
+	return g.iriToType[iri] != nil
 }
 
 func (g *Generator) baseType(c *Class, p *Property) (pkg string, typ string) {
@@ -302,11 +327,11 @@ func (g *Generator) baseType(c *Class, p *Property) (pkg string, typ string) {
 		return "time", "Time"
 	}
 
-	c = g.nameMap[iri]
+	c = g.iriToType[iri]
 	if c == nil {
 		panic("Unknown type for IRI: " + iri)
 	}
-	renamed := g.renamer(NameTypeType, c.GoName)
+	renamed := g.renameFunc(NameTypeType, c.GoName)
 	if renamed == "" {
 		renamed = c.GoName
 	}
@@ -318,7 +343,7 @@ func (g *Generator) baseType(c *Class, p *Property) (pkg string, typ string) {
 }
 
 func (g *Generator) fieldName(_ *Class, p *Property) string {
-	renamed := g.renamer(NameTypeField, p.GoName)
+	renamed := g.renameFunc(NameTypeField, p.GoName)
 	if renamed == "" {
 		renamed = p.GoName
 	}
@@ -335,12 +360,12 @@ func (g *Generator) className(iri string) string {
 		if requireMultipleSegments && i < 1 {
 			continue
 		}
-		if in(g.nameMap, name) {
+		if in(g.iriToType, name) {
 			continue
 		}
 		break
 	}
-	renamed := g.renamer(NameTypeType, name)
+	renamed := g.renameFunc(NameTypeType, name)
 	if renamed != "" {
 		return renamed
 	}
@@ -366,7 +391,7 @@ func (g *Generator) appendListTypeGetters(f *File, listTypeName string, listTyp 
 		if g.isEnum(iri) {
 			continue
 		}
-		c := g.nameMap[iri]
+		c := g.iriToType[iri]
 		if c == listTyp || g.isSubtypeOf(listTyp, c) {
 			f.Func().Params(Id("o").Op("*").Id(listTypeName)).Id(g.className(c.IRI)+iterSuffix).Params().Qual("iter", "Seq2").Index(Id(g.interfaceName(listTyp.IRI)).Op(",").Op("*").Id(g.className(c.IRI))).Block(
 				Return().Id("typeIter").Params(Op("*").Id("o"), Id(castPrefix+g.className(c.IRI))),
@@ -376,12 +401,7 @@ func (g *Generator) appendListTypeGetters(f *File, listTypeName string, listTyp 
 }
 
 func (g *Generator) pluralize(name string) string {
-	name = pluralize.NewClient().Plural(name)
-	renamed := g.renamer(NameTypePluralize, name)
-	if renamed != "" {
-		return renamed
-	}
-	return name
+	return pluralize.NewClient().Plural(name)
 }
 
 func (g *Generator) appendExternalIRI(f *File) {
@@ -485,7 +505,7 @@ func (g *Generator) isSubtypeOf(parent *Class, typ *Class) bool {
 		if typ.ParentIRI == parent.IRI {
 			return true
 		}
-		next := g.nameMap[typ.ParentIRI]
+		next := g.iriToType[typ.ParentIRI]
 		return g.isSubtypeOf(parent, next)
 	}
 	return false
@@ -533,7 +553,7 @@ func validateInValues(path []string, value string, valid ...string) []Validation
 `)
 	for _, name := range keys(g.nameToIRI) {
 		iri := g.nameToIRI[name]
-		c := g.nameMap[iri]
+		c := g.iriToType[iri]
 
 		f.Func().Params(Id("o").Op("*").Id(g.className(iri))).Id("Validate").Params(Id("visited").Id("map[any]struct{}"), Id("path").Op("...").Op("string")).Index().Id("ValidationError").BlockFunc(func(f *Group) {
 			for _, prop := range c.Properties {
@@ -569,7 +589,7 @@ func (g *Generator) appendNamedIndividuals(f *File, ctx *Context, typeIRI string
 			parts := strings.Split(ni.IRI, "/")
 			label = parts[len(parts)-1]
 		}
-		c := g.nameMap[typeIRI]
+		c := g.iriToType[typeIRI]
 		typeName := g.className(typeIRI)
 		varName := typeName + "_" + upperFirst(label)
 		if ni.Comment != "" {
@@ -583,13 +603,54 @@ func (g *Generator) appendNamedIndividuals(f *File, ctx *Context, typeIRI string
 
 func (g *Generator) setId(c *Class, iri string) Code {
 	if c.ParentIRI != "" {
-		parent := g.nameMap[c.ParentIRI]
+		parent := g.iriToType[c.ParentIRI]
 		typeName := g.className(parent.IRI)
 		return Id(typeName).Op(":").Id(typeName).Block(
 			g.setId(parent, iri),
 		).Op(",")
 	}
 	return Id(ld.GoIdField).Op(":").Lit(iri).Op(",")
+}
+
+func (g *Generator) appendContextRegistration(f *File) {
+	contextCreateName := "LDContext"
+	if renamed := g.renameFunc(NameTypeFunc, contextCreateName); renamed != "" {
+		contextCreateName = renamed
+	}
+	f.Func().Id(contextCreateName).Params().Qual(ldImport, "Context").BlockFunc(func(f *Group) {
+		val := Return().Qual(ldImport, "Context").Block()
+		//f.Id("o").Op(":=").Qual(ldImport, "Context").Block()
+		for contextURI, contextJSON := range g.contexts {
+			params := []Code{
+				Lit(contextURI),
+				getMap(contextJSON),
+			}
+			for _, name := range keys(g.nameToIRI) {
+				iri := g.nameToIRI[name]
+				typ := g.iriToType[iri]
+				params = append(params, Id(typ.GoName).Block())
+			}
+			//f.Id("o").Dot("Register").Params(params...)
+			val.Dot("Register").Params(params...)
+		}
+		//f.Return().Id("o")
+		f.Add(val)
+	})
+}
+
+func getMap(contextJSON map[string]any) Code {
+	values := Dict{}
+	for k, v := range contextJSON {
+		switch v := v.(type) {
+		case map[string]any:
+			values[Lit(k)] = getMap(v)
+		case []any:
+			panic("unsupported list in context")
+		default:
+			values[Lit(k)] = Lit(v)
+		}
+	}
+	return Map(String()).Any().Values(values)
 }
 
 func upperFirst(part string) string {
