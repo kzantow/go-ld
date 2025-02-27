@@ -10,6 +10,7 @@ func main() {
 	gosh.Generate(
 		//gosh.EnableLog(),
 		gosh.PackageName("v3_0"),
+		gosh.LicenseID("MIT"),
 		gosh.OutputFile("tmp/model.go"),
 		gosh.RenameFunc(renameFunc),
 		gosh.JsonLDContext("https://spdx.github.io/spdx-spec/v3.0.1/rdf/spdx-context.jsonld"),
