@@ -1,9 +1,10 @@
 package ld
 
 import (
+	"testing"
+
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
 type o = map[string]any

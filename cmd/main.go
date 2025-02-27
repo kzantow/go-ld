@@ -7,16 +7,14 @@ import (
 )
 
 func main() {
-	//gosh.LogEnabled = true
-	ctx := gosh.ParseSHACL("https://spdx.github.io/spdx-spec/v3.0.1/rdf/spdx-model.ttl")
-
-	// "https://spdx.github.io/spdx-spec/v3.0.1/rdf/spdx-context.jsonld"
-	g := gosh.NewGenerator(
+	gosh.Generate(
+		//gosh.EnableLog(),
 		gosh.PackageName("v3_0"),
 		gosh.OutputFile("tmp/model.go"),
 		gosh.RenameFunc(renameFunc),
-		gosh.JsonLDContext("https://spdx.github.io/spdx-spec/v3.0.1/rdf/spdx-context.jsonld"))
-	g.Generate(ctx)
+		gosh.JsonLDContext("https://spdx.github.io/spdx-spec/v3.0.1/rdf/spdx-context.jsonld"),
+		gosh.SHACLTypes("https://spdx.github.io/spdx-spec/v3.0.1/rdf/spdx-model.ttl"),
+	)
 }
 
 func renameFunc(typ gosh.NameType, name string) string {

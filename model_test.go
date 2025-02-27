@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/kzantow/go-ld"
 	"github.com/stretchr/testify/require"
+
+	"github.com/kzantow/go-ld"
 )
 
 // convenience for writing json as code:

@@ -9,13 +9,17 @@ import (
 	"github.com/deiu/rdf2go"
 )
 
-func ParseSHACL(url string) *Context {
-	spdxDefinitions := fetch(url)
+func ParseSHACLFromUrl(url string) (map[string]*Class, []*Individual) {
+	ttl := fetch(url)
+	return ParseSHACL(url, ttl)
+}
 
+func ParseSHACL(url string, ttl []byte) (map[string]*Class, []*Individual) {
 	g := rdf2go.NewGraph(url)
-	must(g.Parse(bytes.NewReader(spdxDefinitions), "text/turtle"))
+	must(g.Parse(bytes.NewReader(ttl), "text/turtle"))
 
-	ctx := NewContext(cleanIRI(url))
+	iriToClass := map[string]*Class{}
+	individuals := []*Individual{}
 
 	var allUsedProps []*rdf2go.Triple
 	used := func(triples ...*rdf2go.Triple) []*rdf2go.Triple {
@@ -31,10 +35,10 @@ func ParseSHACL(url string) *Context {
 			IRI:     cleanIRI(class.Subject.String()),
 			Comment: getComment(used, g, class.Subject),
 		}
-		if _, ok := ctx.Classes[out.IRI]; ok {
+		if _, ok := iriToClass[out.IRI]; ok {
 			panic("duplicate type definition: " + out.IRI)
 		}
-		ctx.Classes[out.IRI] = out
+		iriToClass[out.IRI] = out
 
 		superclass := oneOptional(used, g.All(class.Subject, rdfSubclassOf, nil))
 		if superclass != nil {
@@ -132,7 +136,7 @@ func ParseSHACL(url string) *Context {
 				continue
 			}
 			typeIRI := cleanIRI(entry.Object.String())
-			if c := ctx.Classes[typeIRI]; c != nil {
+			if c := iriToClass[typeIRI]; c != nil {
 				label := ""
 				if l := oneOptional(used, g.All(namedIndividual.Subject, rdfLabel, nil)); l != nil {
 					label = cleanText(l.Object.String())
@@ -143,7 +147,7 @@ func ParseSHACL(url string) *Context {
 					Comment: getComment(used, g, namedIndividual.Subject),
 					TypeIRI: typeIRI,
 				}
-				ctx.NamedIndividuals = append(ctx.NamedIndividuals, &ni)
+				individuals = append(individuals, &ni)
 			}
 		}
 	}
@@ -156,14 +160,7 @@ func ParseSHACL(url string) *Context {
 		log("  ... unused triple:", p)
 	}
 
-	return ctx
-}
-
-func NewContext(url string) *Context {
-	return &Context{
-		IRI:     url,
-		Classes: map[string]*Class{},
-	}
+	return iriToClass, individuals
 }
 
 func getComment(used usedFunc, g *rdf2go.Graph, subject rdf2go.Term) string {

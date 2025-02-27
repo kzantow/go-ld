@@ -2,11 +2,12 @@ package ld
 
 import (
 	"fmt"
-	"github.com/davecgh/go-spew/spew"
 	"reflect"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/davecgh/go-spew/spew"
 )
 
 type graphBuilder struct {

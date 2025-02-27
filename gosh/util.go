@@ -40,10 +40,10 @@ func cleanText(iri string) string {
 	return strings.Trim(iri, "\"")
 }
 
-var LogEnabled = os.Getenv("GOSH_LOG") == "true"
+var logEnabled = false
 
 func log(msg ...any) {
-	if !LogEnabled {
+	if !logEnabled {
 		return
 	}
 	for _, m := range msg {

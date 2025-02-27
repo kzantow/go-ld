@@ -4,30 +4,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
 
 	. "github.com/dave/jennifer/jen"
 	"github.com/gertd/go-pluralize"
-	"github.com/kzantow/go-ld"
 	"mvdan.cc/gofumpt/format"
+
+	"github.com/kzantow/go-ld"
 )
 
-type Generator struct {
-	pkgName           string
-	contexts          map[string]map[string]any
-	outputFile        string
-	outputValidations bool
-	nameToIRI         map[string]string
-	iriToType         map[string]*Class
-	renameFunc        renameFunc
-}
-
-func NewGenerator(opts ...Option) *Generator {
-	g := &Generator{
+func Generate(opts ...Option) {
+	g := &generator{
 		pkgName:           "model",
 		outputValidations: true,
+		classes:           map[string]*Class{},
+		contexts:          map[string]map[string]any{},
 		nameToIRI:         map[string]string{},
 		iriToType:         map[string]*Class{},
 		renameFunc: func(typ NameType, name string) string {
@@ -37,10 +31,59 @@ func NewGenerator(opts ...Option) *Generator {
 	for _, opt := range opts {
 		opt(g)
 	}
-	return g
+	g.Generate()
 }
 
-type renameFunc func(typ NameType, name string) string
+type Option func(*generator)
+
+func EnableLog() Option {
+	return func(generator *generator) {
+		logEnabled = true
+	}
+}
+
+func RenameFunc(fn func(typ NameType, name string) string) Option {
+	return func(generator *generator) {
+		generator.renameFunc = fn
+	}
+}
+
+func OutputFile(path string) Option {
+	return func(generator *generator) {
+		generator.outputFile = strings.TrimSuffix(path, ".go")
+	}
+}
+
+func PackageName(pkg string) Option {
+	return func(generator *generator) {
+		generator.pkgName = pkg
+	}
+}
+
+func JsonLDContext(url string) Option {
+	return func(generator *generator) {
+		if generator.contexts[url] != nil {
+			panic("duplicate contexts registered: " + url)
+		}
+		contents := fetch(url)
+		var ctx map[string]any
+		must(json.Unmarshal(contents, &ctx))
+		generator.contexts[url] = ctx
+	}
+}
+
+func SHACLTypes(url string) Option {
+	return func(generator *generator) {
+		classes, namedIndividuals := ParseSHACLFromUrl(url)
+		for k, v := range classes {
+			if generator.classes[k] != nil {
+				panic("duplicate class iri defined: " + k)
+			}
+			generator.classes[k] = v
+		}
+		generator.namedIndividuals = append(generator.namedIndividuals, namedIndividuals...)
+	}
+}
 
 type NameType int
 
@@ -50,48 +93,30 @@ const (
 	NameTypeFunc
 )
 
-type Option func(*Generator)
+type renameFunc func(typ NameType, name string) string
 
-func RenameFunc(fn func(typ NameType, name string) string) Option {
-	return func(generator *Generator) {
-		generator.renameFunc = fn
-	}
+var ldImport = reflect.TypeOf(ld.Context{}).PkgPath()
+
+type generator struct {
+	pkgName           string
+	contexts          map[string]map[string]any
+	classes           map[string]*Class // classes by IRI
+	namedIndividuals  []*Individual
+	outputFile        string
+	outputValidations bool
+	nameToIRI         map[string]string
+	iriToType         map[string]*Class
+	renameFunc        renameFunc
 }
 
-func OutputFile(path string) Option {
-	return func(generator *Generator) {
-		generator.outputFile = strings.TrimSuffix(path, ".go")
-	}
-}
-
-func PackageName(pkg string) Option {
-	return func(generator *Generator) {
-		generator.pkgName = pkg
-	}
-}
-
-func JsonLDContext(url string) Option {
-	return func(generator *Generator) {
-		if generator.contexts == nil {
-			generator.contexts = map[string]map[string]any{}
-		}
-		contents := fetch(url)
-		var ctx map[string]any
-		must(json.Unmarshal(contents, &ctx))
-		generator.contexts[url] = ctx
-	}
-}
-
-const ldImport = "github.com/kzantow/go-ld"
-
-func (g *Generator) Generate(ctx *Context) {
+func (g *generator) Generate() {
 	f := g.newCode()
 
 	totalTypes := 0
 	totalProps := 0
 
 	// get all the final type names so we can output things alphabetically
-	for _, c := range ctx.Classes {
+	for _, c := range g.classes {
 		totalTypes++
 		renamed := g.className(c.IRI)
 		c.GoName = renamed
@@ -101,14 +126,19 @@ func (g *Generator) Generate(ctx *Context) {
 		totalProps += len(c.Properties)
 	}
 
-	for _, c := range ctx.Classes {
+	// set all prop go names
+	for _, c := range g.classes {
 		totalProps += len(c.Properties)
 		for _, p := range c.Properties {
 			p.GoName = g.propName(c, p)
 		}
 	}
 
-	log("SUMMARY cls: ", totalTypes, ", prop: ", totalProps)
+	slices.SortFunc(g.namedIndividuals, func(a, b *Individual) int {
+		return strings.Compare(a.IRI, b.IRI)
+	})
+
+	log("SUMMARY -- classes:", totalTypes, ", properties:", totalProps, ", individuals:", len(g.namedIndividuals))
 
 	// sort output alphabetically by type name, the names have already been replaced
 	for _, name := range keys(g.nameToIRI) {
@@ -137,7 +167,7 @@ func (g *Generator) Generate(ctx *Context) {
 			)
 		}
 
-		g.appendNamedIndividuals(f, ctx, c.IRI)
+		g.appendNamedIndividualsForType(f, g.namedIndividuals, c.IRI)
 
 		// append the list type for this struct
 		if g.isObject(c.IRI) && !g.isEnum(c.IRI) {
@@ -157,7 +187,7 @@ func (g *Generator) Generate(ctx *Context) {
 	// append context registration
 	g.appendContextRegistration(f)
 
-	fmt.Println()
+	log()
 
 	if g.outputFile != "" {
 		must(os.WriteFile(g.outputFile+".go", formattedSource(f), 0777))
@@ -186,7 +216,7 @@ func formattedSource(f *File) []byte {
 	return src
 }
 
-func (g *Generator) newCode() *File {
+func (g *generator) newCode() *File {
 	f := NewFile(g.pkgName)
 	f.ImportNames(map[string]string{
 		"time":   "time",
@@ -195,7 +225,7 @@ func (g *Generator) newCode() *File {
 	return f
 }
 
-func (g *Generator) typeFields(c *Class) []Code {
+func (g *generator) typeFields(c *Class) []Code {
 	out := []Code{
 		Id(ld.GoTypeField).Qual(ldImport, "Type").Tag(map[string]string{
 			ld.GoIriTagName: c.IRI,
@@ -206,7 +236,7 @@ func (g *Generator) typeFields(c *Class) []Code {
 	return out
 }
 
-func (g *Generator) propName(c *Class, p *Property) string {
+func (g *generator) propName(c *Class, p *Property) string {
 	iri := p.IRI
 
 	iri = cleanIRI(iri)
@@ -230,7 +260,7 @@ func (g *Generator) propName(c *Class, p *Property) string {
 	return name
 }
 
-func (g *Generator) isEnum(typeIRI string) bool {
+func (g *generator) isEnum(typeIRI string) bool {
 	c := g.iriToType[typeIRI]
 	if c != nil {
 		return c.ParentIRI == "" && len(c.Properties) == 0
@@ -238,11 +268,11 @@ func (g *Generator) isEnum(typeIRI string) bool {
 	return false
 }
 
-func (g *Generator) isList(_ *Class, p *Property) bool {
+func (g *generator) isList(_ *Class, p *Property) bool {
 	return p.MaxCount != 1
 }
 
-func (g *Generator) embedSupertypeOrID(c *Class) []Code {
+func (g *generator) embedSupertypeOrID(c *Class) []Code {
 	var out []Code
 	if c.ParentIRI != "" {
 		p := g.iriToType[c.ParentIRI]
@@ -258,7 +288,7 @@ func (g *Generator) embedSupertypeOrID(c *Class) []Code {
 	return out
 }
 
-func (g *Generator) addDirectProperties(c *Class) []Code {
+func (g *generator) addDirectProperties(c *Class) []Code {
 	var out []Code
 	for _, p := range c.Properties {
 		name := g.fieldName(c, p)
@@ -280,7 +310,7 @@ func prefixWith(text string, prefix string) string {
 	return text
 }
 
-func (g *Generator) fieldType(c *Class, p *Property) Code {
+func (g *generator) fieldType(c *Class, p *Property) Code {
 	isObj := g.isObject(p.TypeIRI)
 	isList := g.isList(c, p)
 	isEnum := isObj && g.isEnum(p.TypeIRI)
@@ -304,11 +334,11 @@ func (g *Generator) fieldType(c *Class, p *Property) Code {
 	return t
 }
 
-func (g *Generator) isObject(iri string) bool {
+func (g *generator) isObject(iri string) bool {
 	return g.iriToType[iri] != nil
 }
 
-func (g *Generator) baseType(c *Class, p *Property) (pkg string, typ string) {
+func (g *generator) baseType(c *Class, p *Property) (pkg string, typ string) {
 	iri := cleanIRI(p.TypeIRI)
 	switch iri {
 	case "http://www.w3.org/2001/XMLSchema#string", "http://www.w3.org/2001/XMLSchema#anyURI":
@@ -342,7 +372,7 @@ func (g *Generator) baseType(c *Class, p *Property) (pkg string, typ string) {
 	return "", renamed
 }
 
-func (g *Generator) fieldName(_ *Class, p *Property) string {
+func (g *generator) fieldName(_ *Class, p *Property) string {
 	renamed := g.renameFunc(NameTypeField, p.GoName)
 	if renamed == "" {
 		renamed = p.GoName
@@ -350,7 +380,7 @@ func (g *Generator) fieldName(_ *Class, p *Property) string {
 	return renamed
 }
 
-func (g *Generator) className(iri string) string {
+func (g *generator) className(iri string) string {
 	iri = strings.Trim(iri, "<>")
 	parts := strings.Split(iri, "/")
 	slices.Reverse(parts)
@@ -372,7 +402,7 @@ func (g *Generator) className(iri string) string {
 	return name
 }
 
-func (g *Generator) appendListType(f *File, c *Class) {
+func (g *generator) appendListType(f *File, c *Class) {
 	if g.isEnum(c.IRI) {
 		return
 	}
@@ -385,7 +415,7 @@ func (g *Generator) appendListType(f *File, c *Class) {
 	g.appendListTypeGetters(f, listType, c)
 }
 
-func (g *Generator) appendListTypeGetters(f *File, listTypeName string, listTyp *Class) {
+func (g *generator) appendListTypeGetters(f *File, listTypeName string, listTyp *Class) {
 	for _, name := range keys(g.nameToIRI) {
 		iri := g.nameToIRI[name]
 		if g.isEnum(iri) {
@@ -400,23 +430,25 @@ func (g *Generator) appendListTypeGetters(f *File, listTypeName string, listTyp 
 	}
 }
 
-func (g *Generator) pluralize(name string) string {
+func (g *generator) pluralize(name string) string {
 	return pluralize.NewClient().Plural(name)
 }
 
-func (g *Generator) appendExternalIRI(f *File) {
+func (g *generator) appendExternalIRI(f *File) {
 	const structName = "ExternalIRI"
-	const iriField = "iri"
 
 	// append type
 	f.Type().Id(structName).Struct(
-		Id(iriField).Id("string"),
+		Id(ld.GoIdField).Id("string").Tag(map[string]string{
+			ld.GoIriTagName: ld.JsonIdProp,
+		}),
+		Id("value").Any(),
 	)
 
 	// append creation function
-	f.Func().Id("New" + structName).Params(Id(iriField).Id("string")).Op("*").Id(structName).Block(
+	f.Func().Id("New" + upperFirst(structName)).Params(Id("id").Id("string")).Op("*").Id(structName).Block(
 		Return().Op("&").Id(structName).Block(
-			Id(iriField).Op(":").Id(iriField).Op(","),
+			Id(ld.GoIdField).Op(":").Id("id").Op(","),
 		),
 	)
 
@@ -426,12 +458,12 @@ func (g *Generator) appendExternalIRI(f *File) {
 			continue
 		}
 		f.Func().Params(Id("o").Op("*").Id(structName)).Id(viewPrefix + name).Params().Op("*").Id(name).Block(
-			Return().Nil(),
+			Return().Id(castPrefix + name).Params(Id("o").Dot("value")),
 		)
 	}
 }
 
-func (g *Generator) appendCastFuncs(f *File) {
+func (g *generator) appendCastFuncs(f *File) {
 	// append individual cast functions for each non-enum type
 	for _, name := range keys(g.nameToIRI) {
 		iri := g.nameToIRI[name]
@@ -476,11 +508,11 @@ func (g *Generator) appendCastFuncs(f *File) {
 	)
 }
 
-func (g *Generator) interfaceName(iri string) string {
+func (g *generator) interfaceName(iri string) string {
 	return interfacePrefix + g.className(iri)
 }
 
-func (g *Generator) appendUtils(f *File) {
+func (g *generator) appendUtils(f *File) {
 	f.Id(`
 func typeIter[T any, E any](values []E, cast func(any) *T) iter.Seq2[E,*T] {
 	if values == nil {
@@ -500,7 +532,7 @@ func typeIter[T any, E any](values []E, cast func(any) *T) iter.Seq2[E,*T] {
 `)
 }
 
-func (g *Generator) isSubtypeOf(parent *Class, typ *Class) bool {
+func (g *generator) isSubtypeOf(parent *Class, typ *Class) bool {
 	if typ.ParentIRI != "" {
 		if typ.ParentIRI == parent.IRI {
 			return true
@@ -511,7 +543,7 @@ func (g *Generator) isSubtypeOf(parent *Class, typ *Class) bool {
 	return false
 }
 
-func (g *Generator) appendValidations(f *File) {
+func (g *generator) appendValidations(f *File) {
 	f.Id(`
 import (
 	"fmt"
@@ -573,17 +605,11 @@ func validateInValues(path []string, value string, valid ...string) []Validation
 	}
 }
 
-func (g *Generator) appendNamedIndividuals(f *File, ctx *Context, typeIRI string) {
-	var sortedNamed []*Individual
-	for _, ni := range ctx.NamedIndividuals {
-		if ni.TypeIRI == typeIRI {
-			sortedNamed = append(sortedNamed, ni)
-		}
-	}
-	slices.SortFunc(sortedNamed, func(a, b *Individual) int {
-		return strings.Compare(a.IRI, b.IRI)
-	})
+func (g *generator) appendNamedIndividualsForType(f *File, sortedNamed []*Individual, typeIRI string) {
 	for _, ni := range sortedNamed {
+		if ni.TypeIRI != typeIRI {
+			continue
+		}
 		label := cleanText(ni.Label)
 		if label == "" {
 			parts := strings.Split(ni.IRI, "/")
@@ -601,7 +627,7 @@ func (g *Generator) appendNamedIndividuals(f *File, ctx *Context, typeIRI string
 	}
 }
 
-func (g *Generator) setId(c *Class, iri string) Code {
+func (g *generator) setId(c *Class, iri string) Code {
 	if c.ParentIRI != "" {
 		parent := g.iriToType[c.ParentIRI]
 		typeName := g.className(parent.IRI)
@@ -612,7 +638,7 @@ func (g *Generator) setId(c *Class, iri string) Code {
 	return Id(ld.GoIdField).Op(":").Lit(iri).Op(",")
 }
 
-func (g *Generator) appendContextRegistration(f *File) {
+func (g *generator) appendContextRegistration(f *File) {
 	contextCreateName := "LDContext"
 	if renamed := g.renameFunc(NameTypeFunc, contextCreateName); renamed != "" {
 		contextCreateName = renamed

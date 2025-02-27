@@ -7,6 +7,13 @@ import (
 	spdx "github.com/kzantow/go-ld/tmp"
 )
 
+func Test_equality(t *testing.T) {
+	o := spdx.Organization{Agent: spdx.Agent{Element: spdx.Element{ID: spdx.Organization_SpdxOrganization.ID}}}
+	if spdx.Organization_SpdxOrganization.ID != o.ID {
+		t.Fatal("not equal")
+	}
+}
+
 func Test_code(t *testing.T) {
 	p := &spdx.Package{
 		SoftwareArtifact: spdx.SoftwareArtifact{

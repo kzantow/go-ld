@@ -9,7 +9,7 @@ bootstrap:
 format:
 	gofmt -w .
 	go mod tidy
-	gosimports -w -local github.com/spdx .
+	gosimports -w -local github.com/kzantow .
 
 .PHONY: unit
 unit:
