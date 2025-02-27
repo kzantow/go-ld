@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/davecgh/go-spew/spew"
 )
 
 // Type is a 0-size data holder property type for type-level linked data
@@ -90,6 +92,7 @@ func (c Context) getContext(contextUrl string) *serializationContext {
 			iriToAlias:    map[string]string{},
 			iriToType:     map[string]*typeContext{},
 			typeToContext: map[reflect.Type]*typeContext{},
+			instances:     map[string]reflect.Value{},
 		}
 		c[contextUrl] = ctx
 	}
@@ -249,7 +252,10 @@ func (c Context) setInstanceByIRI(ctx *serializationContext, instances map[strin
 	})
 }
 
-func (c Context) findById(_ *serializationContext, instances map[string]reflect.Value, incoming string) reflect.Value {
+func (c Context) findById(ctx *serializationContext, instances map[string]reflect.Value, incoming string) reflect.Value {
+	if v, ok := ctx.instances[incoming]; ok {
+		return v
+	}
 	inst, ok := instances[incoming]
 	if ok {
 		return inst
@@ -564,6 +570,7 @@ type serializationContext struct {
 	aliasToIri    map[string]string
 	aliasContext  map[string]string
 	iriToAlias    map[string]string
+	instances     map[string]reflect.Value
 }
 
 func fieldByType[T any](t reflect.Type) (reflect.StructField, bool) {
@@ -580,24 +587,62 @@ func fieldByType[T any](t reflect.Type) (reflect.StructField, bool) {
 
 func (ctx *serializationContext) registerType(instancePointer any) {
 	t := reflect.TypeOf(instancePointer)
+	instance := reflect.ValueOf(instancePointer)
 	t = baseType(t) // types may be passed as pointers, but we want the base types
 
 	tc := ctx.typeToContext[t]
-	if tc != nil {
-		return // already registered
+	if tc == nil {
+		tc = &typeContext{
+			ctx: ctx,
+			typ: t,
+		}
+		meta, ok := fieldByType[Type](t)
+		if ok {
+			tc.iri = meta.Tag.Get(GoIriTagName)
+			tc.compact = ctx.iriToAlias[tc.iri]
+		}
+		ctx.iriToType[tc.iri] = tc
+		//ctx.iriToType[tc.compact] = tc
+		ctx.typeToContext[t] = tc
 	}
-	tc = &typeContext{
-		ctx: ctx,
-		typ: t,
+
+	// capture all the registered types
+	if id := getId(instance); id != "" {
+		if instance.Type().Kind() != reflect.Pointer {
+			panic("expected instance registration to be a pointer, got: " + spew.Sdump(instance))
+		}
+		ctx.instances[id] = instance
 	}
-	meta, ok := fieldByType[Type](t)
-	if ok {
-		tc.iri = meta.Tag.Get(GoIriTagName)
-		tc.compact = ctx.iriToAlias[tc.iri]
+}
+
+func getId(v reflect.Value) string {
+	switch v.Type().Kind() {
+	case reflect.String:
+		return v.String()
+	case reflect.Pointer:
+		return getId(v.Elem())
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			f := v.Type().Field(i)
+
+			if f.Anonymous {
+				id := getId(v.Field(i))
+				if id != "" {
+					return id
+				}
+			}
+
+			if f.Tag.Get(GoIriTagName) == JsonIdProp {
+				if f.Type.Kind() != reflect.String {
+					panic("invalid @id type: " + spew.Sdump(f))
+				}
+				return v.Field(i).String()
+			}
+		}
+	default:
+		panic("unable to get id from no-struct type: " + spew.Sdump(v))
 	}
-	ctx.iriToType[tc.iri] = tc
-	//ctx.iriToType[tc.compact] = tc
-	ctx.typeToContext[t] = tc
+	return ""
 }
 
 // appendErr appends errors, flattening joined errors

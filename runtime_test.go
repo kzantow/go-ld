@@ -83,7 +83,7 @@ func Test_refCount(t *testing.T) {
 			name:     "circular 1",
 			checkObj: o31,
 			checkIn:  o31,
-			expected: 1,
+			expected: 2, // this returns 2 because it needs to find a circular reference to itself
 		},
 		{
 			name:     "circular 2",

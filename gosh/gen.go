@@ -22,6 +22,7 @@ func Generate(opts ...Option) {
 		outputValidations: true,
 		classes:           map[string]*Class{},
 		contexts:          map[string]map[string]any{},
+		namedIndividuals:  map[string][]*Individual{},
 		nameToIRI:         map[string]string{},
 		iriToType:         map[string]*Class{},
 		renameFunc: func(typ NameType, name string) string {
@@ -81,7 +82,9 @@ func SHACLTypes(url string) Option {
 			}
 			generator.classes[k] = v
 		}
-		generator.namedIndividuals = append(generator.namedIndividuals, namedIndividuals...)
+		for _, ni := range namedIndividuals {
+			generator.namedIndividuals[ni.TypeIRI] = append(generator.namedIndividuals[ni.TypeIRI], ni)
+		}
 	}
 }
 
@@ -95,18 +98,17 @@ const (
 
 type renameFunc func(typ NameType, name string) string
 
-var ldImport = reflect.TypeOf(ld.Context{}).PkgPath()
-
 type generator struct {
 	pkgName           string
 	contexts          map[string]map[string]any
-	classes           map[string]*Class // classes by IRI
-	namedIndividuals  []*Individual
+	classes           map[string]*Class        // classes by IRI
+	namedIndividuals  map[string][]*Individual // individuals by IRI, sorted
 	outputFile        string
 	outputValidations bool
 	nameToIRI         map[string]string
 	iriToType         map[string]*Class
 	renameFunc        renameFunc
+	useEnums          bool
 }
 
 func (g *generator) Generate() {
@@ -134,9 +136,11 @@ func (g *generator) Generate() {
 		}
 	}
 
-	slices.SortFunc(g.namedIndividuals, func(a, b *Individual) int {
-		return strings.Compare(a.IRI, b.IRI)
-	})
+	for iri := range g.namedIndividuals {
+		slices.SortFunc(g.namedIndividuals[iri], func(a, b *Individual) int {
+			return strings.Compare(a.IRI, b.IRI)
+		})
+	}
 
 	log("SUMMARY -- classes:", totalTypes, ", properties:", totalProps, ", individuals:", len(g.namedIndividuals))
 
@@ -167,7 +171,7 @@ func (g *generator) Generate() {
 			)
 		}
 
-		g.appendNamedIndividualsForType(f, g.namedIndividuals, c.IRI)
+		g.appendNamedIndividualsForType(f, c.IRI)
 
 		// append the list type for this struct
 		if g.isObject(c.IRI) && !g.isEnum(c.IRI) {
@@ -253,14 +257,14 @@ func (g *generator) propName(c *Class, p *Property) string {
 	if g.isList(c, p) {
 		name = g.pluralize(name)
 	}
-	renamed := g.renameFunc(NameTypeField, name)
-	if renamed != "" {
-		return renamed
-	}
-	return name
+
+	return g.name(NameTypeField, name)
 }
 
 func (g *generator) isEnum(typeIRI string) bool {
+	if !g.useEnums {
+		return false
+	}
 	c := g.iriToType[typeIRI]
 	if c != nil {
 		return c.ParentIRI == "" && len(c.Properties) == 0
@@ -361,23 +365,16 @@ func (g *generator) baseType(c *Class, p *Property) (pkg string, typ string) {
 	if c == nil {
 		panic("Unknown type for IRI: " + iri)
 	}
-	renamed := g.renameFunc(NameTypeType, c.GoName)
-	if renamed == "" {
-		renamed = c.GoName
-	}
-	parts := strings.Split(renamed, ".")
+	name := g.name(NameTypeType, c.GoName)
+	parts := strings.Split(name, ".")
 	if len(parts) > 1 {
 		return strings.Join(parts[0:len(parts)-1], "."), parts[len(parts)-1]
 	}
-	return "", renamed
+	return "", name
 }
 
 func (g *generator) fieldName(_ *Class, p *Property) string {
-	renamed := g.renameFunc(NameTypeField, p.GoName)
-	if renamed == "" {
-		renamed = p.GoName
-	}
-	return renamed
+	return g.name(NameTypeField, p.GoName)
 }
 
 func (g *generator) className(iri string) string {
@@ -395,11 +392,7 @@ func (g *generator) className(iri string) string {
 		}
 		break
 	}
-	renamed := g.renameFunc(NameTypeType, name)
-	if renamed != "" {
-		return renamed
-	}
-	return name
+	return g.name(NameTypeType, name)
 }
 
 func (g *generator) appendListType(f *File, c *Class) {
@@ -435,11 +428,11 @@ func (g *generator) pluralize(name string) string {
 }
 
 func (g *generator) appendExternalIRI(f *File) {
-	const structName = "ExternalIRI"
+	structName := g.name(NameTypeType, externalIriName)
 
-	// append type
+	// append type without type info, these will only output as an id
 	f.Type().Id(structName).Struct(
-		Id(ld.GoIdField).Id("string").Tag(map[string]string{
+		Id(unexport(ld.GoIdField)).Id("string").Tag(map[string]string{
 			ld.GoIriTagName: ld.JsonIdProp,
 		}),
 		Id("value").Any(),
@@ -448,7 +441,7 @@ func (g *generator) appendExternalIRI(f *File) {
 	// append creation function
 	f.Func().Id("New" + upperFirst(structName)).Params(Id("id").Id("string")).Op("*").Id(structName).Block(
 		Return().Op("&").Id(structName).Block(
-			Id(ld.GoIdField).Op(":").Id("id").Op(","),
+			Id(unexport(ld.GoIdField)).Op(":").Id("id").Op(","),
 		),
 	)
 
@@ -605,25 +598,23 @@ func validateInValues(path []string, value string, valid ...string) []Validation
 	}
 }
 
-func (g *generator) appendNamedIndividualsForType(f *File, sortedNamed []*Individual, typeIRI string) {
-	for _, ni := range sortedNamed {
-		if ni.TypeIRI != typeIRI {
-			continue
-		}
-		label := cleanText(ni.Label)
-		if label == "" {
-			parts := strings.Split(ni.IRI, "/")
-			label = parts[len(parts)-1]
-		}
-		c := g.iriToType[typeIRI]
-		typeName := g.className(typeIRI)
-		varName := typeName + "_" + upperFirst(label)
+func (g *generator) appendNamedIndividualsForType(f *File, typeIRI string) {
+	for _, ni := range g.namedIndividuals[typeIRI] {
+		varName := g.namedIndividualName(ni)
 		if ni.Comment != "" {
 			f.Comment(prefixWith(ni.Comment, varName))
 		}
-		f.Var().Id(varName).Op("=").Id(typeName).Block(
-			g.setId(c, ni.IRI),
-		)
+		if g.useEnums && g.isEnum(typeIRI) {
+			c := g.iriToType[typeIRI]
+			typeName := g.className(typeIRI)
+			f.Var().Id(varName).Op("=").Id(typeName).Block(
+				g.setId(c, ni.IRI),
+			)
+		} else {
+			f.Var().Id(varName).Id(g.interfaceName(typeIRI)).Op("=").Op("&").Id(externalIriName).Block(
+				Id(unexport(ld.GoIdField)).Op(":").Lit(ni.IRI).Op(","),
+			)
+		}
 	}
 }
 
@@ -639,13 +630,9 @@ func (g *generator) setId(c *Class, iri string) Code {
 }
 
 func (g *generator) appendContextRegistration(f *File) {
-	contextCreateName := "LDContext"
-	if renamed := g.renameFunc(NameTypeFunc, contextCreateName); renamed != "" {
-		contextCreateName = renamed
-	}
+	contextCreateName := g.name(NameTypeFunc, "context")
 	f.Func().Id(contextCreateName).Params().Qual(ldImport, "Context").BlockFunc(func(f *Group) {
 		val := Return().Qual(ldImport, "Context").Block()
-		//f.Id("o").Op(":=").Qual(ldImport, "Context").Block()
 		for contextURI, contextJSON := range g.contexts {
 			params := []Code{
 				Lit(contextURI),
@@ -655,13 +642,35 @@ func (g *generator) appendContextRegistration(f *File) {
 				iri := g.nameToIRI[name]
 				typ := g.iriToType[iri]
 				params = append(params, Id(typ.GoName).Block())
+				if !g.isEnum(iri) {
+					for _, ni := range g.namedIndividuals[iri] {
+						params = append(params, Id(g.namedIndividualName(ni)))
+					}
+				}
 			}
-			//f.Id("o").Dot("Register").Params(params...)
 			val.Dot("Register").Params(params...)
 		}
-		//f.Return().Id("o")
 		f.Add(val)
 	})
+}
+
+func (g *generator) name(typ NameType, name string) string {
+	renamed := g.renameFunc(typ, name)
+	if renamed != "" {
+		return renamed
+	}
+	return name
+}
+
+func (g *generator) namedIndividualName(ni *Individual) string {
+	label := cleanText(ni.Label)
+	if label == "" {
+		parts := strings.Split(ni.IRI, "/")
+		label = parts[len(parts)-1]
+	}
+	label = g.name(NameTypeField, label)
+	typeName := g.className(ni.TypeIRI)
+	return typeName + "_" + upperFirst(label)
 }
 
 func getMap(contextJSON map[string]any) Code {
@@ -683,9 +692,15 @@ func upperFirst(part string) string {
 	return strings.ToUpper(part[:1]) + part[1:]
 }
 
+func unexport(part string) string {
+	return strings.ToLower(part)
+}
+
 var requireMultipleSegments = os.Getenv("REQUIRE_MULTIPLE_SEGMENTS") == "true"
 var interfacePrefix = "Any"
 var listSuffix = "List"
 var viewPrefix = "as"
 var castPrefix = "cast"
 var iterSuffix = "Iter"
+var ldImport = reflect.TypeOf(ld.Context{}).PkgPath()
+var externalIriName = "ExternalIRI"

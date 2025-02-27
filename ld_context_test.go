@@ -10,6 +10,35 @@ import (
 type o = map[string]any
 type l = []any
 
+func Test_registeredInstances(t *testing.T) {
+	type AType struct {
+		_     Type   `iri:"http://example.org/context/thing-a"`
+		ID    string `iri:"@id"`
+		Name  string `iri:"http://example.org/context/name"`
+		thing []any
+	}
+
+	inst := &AType{
+		ID:   "http://example.org/context/an-instance",
+		Name: "an-instance",
+	}
+
+	contextName := "http://example.org/context"
+	ctx := Context{}.Register(contextName, o{"@context": o{
+		"name": "http://example.org/context/name",
+	}}, inst)
+	require.Len(t, ctx, 1)
+
+	g, err := ctx.FromMaps(o{
+		"@context": contextName,
+		"@graph": l{
+			"http://example.org/context/an-instance",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, inst, g[0])
+}
+
 func Test_MultiRegistration(t *testing.T) {
 	type AType struct {
 		_    Type   `iri:"http://example.org/context/thing-a"`

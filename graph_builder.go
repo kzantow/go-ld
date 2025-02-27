@@ -306,9 +306,6 @@ func refCount(find any, container any) int {
 
 // refCountR recursively searches for the value, find, in the value v
 func refCountR(find reflect.Value, visited map[reflect.Value]struct{}, v reflect.Value) int {
-	if find.Equal(v) {
-		return 1
-	}
 	if !v.IsValid() {
 		return 0
 	}
@@ -323,7 +320,11 @@ func refCountR(find reflect.Value, visited map[reflect.Value]struct{}, v reflect
 		if v.IsNil() {
 			return 0
 		}
-		return refCountR(find, visited, v.Elem())
+		count := refCountR(find, visited, v.Elem())
+		if find.Equal(v) {
+			return count + 1
+		}
+		return count
 	case reflect.Struct:
 		count := 0
 		for i := 0; i < v.NumField(); i++ {

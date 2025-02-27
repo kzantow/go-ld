@@ -8,8 +8,8 @@ import (
 )
 
 func Test_equality(t *testing.T) {
-	o := spdx.Organization{Agent: spdx.Agent{Element: spdx.Element{ID: spdx.Organization_SpdxOrganization.ID}}}
-	if spdx.Organization_SpdxOrganization.ID != o.ID {
+	o := spdx.Organization_SpdxOrganization
+	if o != spdx.Organization_SpdxOrganization {
 		t.Fatal("not equal")
 	}
 }
@@ -17,16 +17,14 @@ func Test_equality(t *testing.T) {
 func Test_code(t *testing.T) {
 	p := &spdx.Package{
 		SoftwareArtifact: spdx.SoftwareArtifact{
+			Artifact: spdx.Artifact{Element: spdx.Element{
+				ID:   "whee",
+				Name: "a-pkg",
+			}},
 			PrimaryPurpose: spdx.SoftwarePurpose_Library,
-			AdditionalPurposes: []spdx.SoftwarePurpose{
+			AdditionalPurposes: spdx.SoftwarePurposeList{
 				spdx.SoftwarePurpose_Data,
 				spdx.SoftwarePurpose_Container,
-			},
-			Artifact: spdx.Artifact{
-				Element: spdx.Element{
-					ID:   "whee",
-					Name: "a-pkg",
-				},
 			},
 		},
 		PackageVersion: "1",
@@ -45,9 +43,9 @@ func Test_code(t *testing.T) {
 		fmt.Println("AsPkg.Name: " + asName)
 
 		_ = spdx.As(o, func(v *spdx.SoftwareArtifact) error {
-			fmt.Println("Primary Purpose: " + v.PrimaryPurpose.ID)
+			fmt.Printf("Primary Purpose: %v\n", v.PrimaryPurpose)
 			for _, add := range v.AdditionalPurposes {
-				fmt.Println("Additional Purpose: " + add.ID)
+				fmt.Printf("Additional Purpose: %v\n", add)
 			}
 			return nil
 		})
