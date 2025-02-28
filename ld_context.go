@@ -607,42 +607,17 @@ func (ctx *serializationContext) registerType(instancePointer any) {
 	}
 
 	// capture all the registered types
-	if id := getId(instance); id != "" {
+	id, err := GetID(instance)
+	if err != nil {
+		// we should not have invalid types registered
+		panic(err)
+	}
+	if id != "" {
 		if instance.Type().Kind() != reflect.Pointer {
 			panic("expected instance registration to be a pointer, got: " + spew.Sdump(instance))
 		}
 		ctx.instances[id] = instance
 	}
-}
-
-func getId(v reflect.Value) string {
-	switch v.Type().Kind() {
-	case reflect.String:
-		return v.String()
-	case reflect.Pointer:
-		return getId(v.Elem())
-	case reflect.Struct:
-		for i := 0; i < v.NumField(); i++ {
-			f := v.Type().Field(i)
-
-			if f.Anonymous {
-				id := getId(v.Field(i))
-				if id != "" {
-					return id
-				}
-			}
-
-			if f.Tag.Get(GoIriTagName) == JsonIdProp {
-				if f.Type.Kind() != reflect.String {
-					panic("invalid @id type: " + spew.Sdump(f))
-				}
-				return v.Field(i).String()
-			}
-		}
-	default:
-		panic("unable to get id from no-struct type: " + spew.Sdump(v))
-	}
-	return ""
 }
 
 // appendErr appends errors, flattening joined errors

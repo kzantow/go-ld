@@ -111,7 +111,7 @@ func (r *Relationship) asRelationship() *Relationship {
 	return r
 }
 
-var File_DevNull = File{Element: Element{ID: "/dev/null"}}
+var File_DevNull = &File{Element: Element{ID: "https://example.org/iri/file/dev/null"}}
 
 // SubRelationship implements inheritance by embedding
 type SubRelationship struct {
@@ -148,6 +148,7 @@ func testContext() (ld.Context, string) {
 	return ld.Context{}.Register(contextURL, testJsonLdContext,
 		Package{},
 		File{},
+		File_DevNull,
 		Relationship{},
 	), contextURL
 }

@@ -14,8 +14,8 @@ func Test_decode(t *testing.T) {
 	}{
 		{
 			graph: l{
-				o{"@type": "package", "@id": "pkg-1", "name": "pkg 1"},
-				o{"@type": "file", "@id": "file-1", "contents": "file 1"},
+				o{"@type": "software_Package", "@id": "pkg-1", "name": "pkg 1"},
+				o{"@type": "software_File", "@id": "file-1", "contents": "file 1"},
 				o{"@type": "relationship", "from": "file-1", "to": l{"pkg-1"}},
 			},
 			want: func() a {
@@ -26,11 +26,12 @@ func Test_decode(t *testing.T) {
 			},
 		},
 		{
+			name: "top level named individual",
 			graph: l{
 				"/dev/null", // named individual
 			},
 			want: func() a {
-				return l{&File_DevNull}
+				return l{File_DevNull}
 			},
 		},
 	}
@@ -40,7 +41,8 @@ func Test_decode(t *testing.T) {
 			graph := testGraph(t, tt.graph)
 			got := toJSON(t, graph)
 
-			expected := toJSON(t, tt.want())
+			want := tt.want()
+			expected := toJSON(t, want)
 			require.JSONEq(t, expected, got)
 		})
 	}
