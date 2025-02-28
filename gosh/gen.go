@@ -198,9 +198,6 @@ func (g *generator) Generate() {
 	// append cast functions
 	g.appendCastFuncs(f)
 
-	// append utilities, like typeIter
-	g.appendUtils(f)
-
 	// append context registration
 	g.appendContextRegistration(f)
 
@@ -433,7 +430,7 @@ func (g *generator) appendListTypeGetters(f *File, listTypeName string, listTyp 
 		c := g.iriToType[iri]
 		if c == listTyp || g.isSubtypeOf(listTyp, c) {
 			f.Func().Params(Id("o").Op("*").Id(listTypeName)).Id(g.className(c.IRI)+iterSuffix).Params().Qual("iter", "Seq2").Index(Id(g.interfaceName(listTyp.IRI)).Op(",").Op("*").Id(g.className(c.IRI))).Block(
-				Return().Id("typeIter").Params(Op("*").Id("o"), Id(castPrefix+g.className(c.IRI))),
+				Return().Qual(ldImport, "TypeIter").Params(Op("*").Id("o"), Id(castPrefix+g.className(c.IRI))),
 			)
 		}
 	}
@@ -519,26 +516,6 @@ func (g *generator) appendCastFuncs(f *File) {
 
 func (g *generator) interfaceName(iri string) string {
 	return interfacePrefix + g.className(iri)
-}
-
-func (g *generator) appendUtils(f *File) {
-	f.Id(`
-func typeIter[T any, E any](values []E, cast func(any) *T) iter.Seq2[E,*T] {
-	if values == nil {
-		return func(yield func(E,*T) bool) {}
-	}
-	return func(yield func(E,*T) bool) {
-		for _, value := range values {
-			v := cast(value)
-			if v != nil {
-				if !yield(value, v) {
-					return
-				}
-			}
-		}
-	}
-}
-`)
 }
 
 func (g *generator) isSubtypeOf(parent *Class, typ *Class) bool {
