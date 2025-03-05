@@ -12,9 +12,10 @@ func main() {
 		gosh.PackageName("v3_0"),
 		gosh.LicenseID("MIT"),
 		gosh.OutputFile("tmp/model.go"),
+		gosh.UseEnums(true),
 		gosh.RenameFunc(renameFunc),
-		gosh.JsonLDContext("https://spdx.github.io/spdx-spec/v3.0.1/rdf/spdx-context.jsonld"),
-		gosh.SHACLTypes("https://spdx.github.io/spdx-spec/v3.0.1/rdf/spdx-model.ttl"),
+		gosh.JsonLDContext("https://spdx.org/rdf/3.0.1/spdx-context.jsonld"),
+		gosh.SHACLTypes("https://spdx.org/rdf/3.0.1/spdx-model.ttl"),
 	)
 }
 

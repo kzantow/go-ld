@@ -71,6 +71,12 @@ func LicenseID(spdxLicenseID string) Option {
 	}
 }
 
+func UseEnums(useEnums bool) Option {
+	return func(generator *generator) {
+		generator.useEnums = useEnums
+	}
+}
+
 func JsonLDContext(url string) Option {
 	return func(generator *generator) {
 		if generator.contexts[url] != nil {
@@ -162,6 +168,7 @@ func (g *generator) Generate() {
 		iri := g.nameToIRI[name]
 		c := g.iriToType[iri]
 
+		// append the interface for this struct, can be extended
 		if !g.isEnum(c.IRI) {
 			f.Type().Id(interfacePrefix + name).Interface(
 				Id(viewPrefix + name).Params().Op("*").Id(name),
@@ -177,13 +184,14 @@ func (g *generator) Generate() {
 			g.typeFields(c)...,
 		)
 
-		// append the interface for this struct, can be extended
+		// implement the interface for this struct
 		if !g.isEnum(c.IRI) {
 			f.Func().Params(Id("o").Op("*").Id(name)).Id(viewPrefix + name).Params().Op("*").Id(name).Block(
 				Return(Id("o")),
 			)
 		}
 
+		// add all the named individuals defined for this type
 		g.appendNamedIndividualsForType(f, c.IRI)
 
 		// append the list type for this struct
@@ -298,7 +306,11 @@ func (g *generator) embedSupertypeOrID(c *Class) []Code {
 		}
 		out = append(out, Id(p.GoName))
 	} else {
-		out = append(out, Id(ld.GoIdField).Id("string").Tag(map[string]string{
+		idField := ld.GoIdField
+		if g.isEnum(c.IRI) {
+			idField = unexport(idField)
+		}
+		out = append(out, Id(idField).Id("string").Tag(map[string]string{
 			ld.GoIriTagName: ld.JsonIdProp,
 		}))
 	}
@@ -355,6 +367,8 @@ func (g *generator) isObject(iri string) bool {
 	return g.iriToType[iri] != nil
 }
 
+// baseType returns the golang base type to output, this needs to be kept in sync
+// with ../primitives.go
 func (g *generator) baseType(c *Class, p *Property) (pkg string, typ string) {
 	iri := cleanIRI(p.TypeIRI)
 	switch iri {
@@ -409,9 +423,6 @@ func (g *generator) className(iri string) string {
 }
 
 func (g *generator) appendListType(f *File, c *Class) {
-	if g.isEnum(c.IRI) {
-		return
-	}
 	listType := g.className(c.IRI) + listSuffix
 
 	// append the list type
@@ -452,7 +463,7 @@ func (g *generator) appendExternalIRI(f *File) {
 	)
 
 	// append creation function
-	f.Func().Id("New" + upperFirst(structName)).Params(Id("id").Id("string")).Op("*").Id(structName).Block(
+	f.Func().Id(g.externalIRIName()).Params(Id("id").Id("string")).Op("*").Id(structName).Block(
 		Return().Op("&").Id(structName).Block(
 			Id(unexport(ld.GoIdField)).Op(":").Id("id").Op(","),
 		),
@@ -530,45 +541,6 @@ func (g *generator) isSubtypeOf(parent *Class, typ *Class) bool {
 }
 
 func (g *generator) appendValidations(f *File) {
-	f.Id(`
-import (
-	"fmt"
-	"slices"
-	"strconv"
-	"strings"
-)
-
-type ValidationError struct {
-	Path []string
-	Err error
-}
-
-func (v ValidationError) String() string {
-	return strings.Join(v.Path, ".") + ": " + v.Err.Error()
-}
-
-func (v ValidationError) Error() string {
-	return v.String()
-}
-
-func newValidationError(path []string, err error) ValidationError {
-	return ValidationError{
-		Path: path,
-		Err: err,
-	}
-}
-
-type validator interface {
-	Validate(visited map[any]struct{}, path ...string) []ValidationError
-}
-
-func validateInValues(path []string, value string, valid ...string) []ValidationError {
-	if slices.Contains(valid, value) {
-		return nil
-	}
-	return []ValidationError{newValidationError(path, fmt.Errorf("invalid value: '%v', expected: %v", value, valid))}
-}
-`)
 	for _, name := range keys(g.nameToIRI) {
 		iri := g.nameToIRI[name]
 		c := g.iriToType[iri]
@@ -619,26 +591,28 @@ func (g *generator) setId(c *Class, iri string) Code {
 			g.setId(parent, iri),
 		).Op(",")
 	}
+	if g.isEnum(c.IRI) {
+		return Id(unexport(ld.GoIdField)).Op(":").Lit(iri).Op(",")
+	}
 	return Id(ld.GoIdField).Op(":").Lit(iri).Op(",")
 }
 
 func (g *generator) appendContextRegistration(f *File) {
 	contextCreateName := g.name(NameTypeFunc, "context")
-	f.Func().Id(contextCreateName).Params().Qual(ldImport, "Context").BlockFunc(func(f *Group) {
-		val := Return().Qual(ldImport, "Context").Block()
+	f.Func().Id(contextCreateName).Params().Op("*").Qual(ldImport, "Context").BlockFunc(func(f *Group) {
+		val := Return().Qual(ldImport, "NewContext").Params()
 		for contextURI, contextJSON := range g.contexts {
 			params := []Code{
 				Lit(contextURI),
 				getMap(contextJSON),
+				Id(g.externalIRIName()),
 			}
 			for _, name := range keys(g.nameToIRI) {
 				iri := g.nameToIRI[name]
 				typ := g.iriToType[iri]
 				params = append(params, Id(typ.GoName).Block())
-				if !g.isEnum(iri) {
-					for _, ni := range g.namedIndividuals[iri] {
-						params = append(params, Id(g.namedIndividualName(ni)))
-					}
+				for _, ni := range g.namedIndividuals[iri] {
+					params = append(params, Id(g.namedIndividualName(ni)))
 				}
 			}
 			val.Dot("Register").Params(params...)
@@ -664,6 +638,13 @@ func (g *generator) namedIndividualName(ni *Individual) string {
 	label = g.name(NameTypeField, label)
 	typeName := g.className(ni.TypeIRI)
 	return typeName + "_" + upperFirst(label)
+}
+
+func (g *generator) externalIRIName() string {
+	structName := g.name(NameTypeType, externalIriName)
+	funcName := g.name(NameTypeFunc, "New"+structName)
+	funcName = upperFirst(funcName)
+	return funcName
 }
 
 func getMap(contextJSON map[string]any) Code {

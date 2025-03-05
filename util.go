@@ -1,0 +1,141 @@
+package ld
+
+import (
+	"cmp"
+	"errors"
+	"path"
+	"reflect"
+	"slices"
+	"strings"
+)
+
+var (
+	emptyValue reflect.Value
+	anyType    = reflect.TypeOf((*any)(nil)).Elem()
+)
+
+// appendErr appends errors, flattening joined errors
+func appendErr(err error, errs ...error) error {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		return errors.Join(append(joined.Unwrap(), errs...)...)
+	}
+	if err == nil {
+		return errors.Join(errs...)
+	}
+	return errors.Join(append([]error{err}, errs...)...)
+}
+
+// baseType returns the base type if this is a pointer or interface
+func baseType(t reflect.Type) reflect.Type {
+	switch t.Kind() {
+	case reflect.Pointer:
+		return baseType(t.Elem())
+	default:
+		return t
+	}
+}
+
+func isFunc(o any) bool {
+	return reflect.TypeOf(o).Kind() == reflect.Func
+}
+
+// isBlankNodeID indicates this is a blank node ID, e.g. _:CreationInfo-1
+func isBlankNodeID(id string) bool {
+	return strings.HasPrefix(id, "_:")
+}
+
+func typeName(t reflect.Type) string {
+	switch {
+	case isPointer(t):
+		return "*" + typeName(t.Elem())
+	case isSlice(t):
+		return "[]" + typeName(t.Elem())
+	case isMap(t):
+		return "map[" + typeName(t.Key()) + "]" + typeName(t.Elem())
+	case isPrimitive(t):
+		return t.Name()
+	}
+	return path.Base(t.PkgPath()) + "." + t.Name()
+}
+
+func isSlice(t reflect.Type) bool {
+	return t.Kind() == reflect.Slice
+}
+
+func isMap(t reflect.Type) bool {
+	return t.Kind() == reflect.Map
+}
+
+func isPointer(t reflect.Type) bool {
+	return t.Kind() == reflect.Pointer
+}
+
+func isPrimitive(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.String,
+		reflect.Int,
+		reflect.Int8,
+		reflect.Int16,
+		reflect.Int32,
+		reflect.Int64,
+		reflect.Uint,
+		reflect.Uint8,
+		reflect.Uint16,
+		reflect.Uint32,
+		reflect.Uint64,
+		reflect.Float32,
+		reflect.Float64,
+		reflect.Bool:
+		return true
+	default:
+		return false
+	}
+}
+
+// fieldByType returns a field defined on type StructType matching the provided type, t
+func fieldByType[StructType any](t reflect.Type) (reflect.StructField, bool) {
+	var v StructType
+	typ := reflect.TypeOf(v)
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Type == typ {
+			return f, true
+		}
+	}
+	return reflect.StructField{}, false
+}
+
+// skipField indicates whether the field should be skipped
+func skipField(field reflect.StructField) bool {
+	return field.Type.Size() == 0
+}
+
+// merge returns a new map with all map values merged together
+func merge[K comparable, V any](maps ...map[K]V) map[K]V {
+	out := map[K]V{}
+	for _, m := range maps {
+		if m == nil {
+			continue
+		}
+		for k, v := range m {
+			if _, ok := out[k]; ok {
+				panic("Context key already defined: " + stringify(k))
+			}
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func firstKey[K cmp.Ordered, V any](m map[K]V) K {
+	return sortedKeys(m)[0]
+}
+
+func sortedKeys[K cmp.Ordered, V any](m map[K]V) []K {
+	out := make([]K, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
+}

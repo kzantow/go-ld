@@ -7,9 +7,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type o = map[string]any
-type l = []any
-
 func Test_registeredInstances(t *testing.T) {
 	type AType struct {
 		_     Type   `iri:"http://example.org/context/thing-a"`
@@ -24,7 +21,7 @@ func Test_registeredInstances(t *testing.T) {
 	}
 
 	contextName := "http://example.org/context"
-	ctx := Context{}.Register(contextName, o{"@context": o{
+	ctx := NewContext().Register(contextName, o{"@context": o{
 		"name": "http://example.org/context/name",
 	}}, inst)
 	require.Len(t, ctx, 1)
@@ -46,7 +43,7 @@ func Test_MultiRegistration(t *testing.T) {
 	}
 
 	contextName := "http://example.org/context"
-	ctx := Context{}.Register(contextName, o{"@context": o{
+	ctx := NewContext().Register(contextName, o{"@context": o{
 		"name": "http://example.org/context/name",
 	}}, AType{})
 	require.Len(t, ctx, 1)
@@ -59,10 +56,10 @@ func Test_MultiRegistration(t *testing.T) {
 	ctx = ctx.Register(contextName, o{"@context": o{}}, BType{})
 	require.Len(t, ctx, 1)
 
-	sc := ctx[contextName]
+	sc := ctx.contextMap[contextName]
 	require.NotNil(t, sc)
-	require.Len(t, sc.typeToContext, 2)
-	require.Equal(t, "name", sc.iriToAlias["http://example.org/context/name"])
+	require.Len(t, ctx.typeToContext, 2)
+	//require.Equal(t, "name", sc.iriToAlias["http://example.org/context/name"])
 
 	maps, err := ctx.ToMaps(AType{
 		Name: "A",

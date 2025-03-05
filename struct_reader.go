@@ -75,7 +75,7 @@ func structIdFunc(t reflect.Type) (reader[string], error) {
 		}
 	}
 	// this struct type does not have an id
-	return nil, fmt.Errorf("unable to find id field in %v", stringify(t))
+	return nil, fmt.Errorf("unable to find ID field in %v", stringify(t))
 }
 
 func hasIDField(t reflect.Type) bool {

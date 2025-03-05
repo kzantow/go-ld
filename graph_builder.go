@@ -2,8 +2,10 @@ package ld
 
 import (
 	"fmt"
+	"github.com/piprate/json-gold/ld"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,46 +13,114 @@ import (
 )
 
 type graphBuilder struct {
-	ldc      Context
+	ctx      *Context
+	prefixes map[*serializationContext]string
 	input    []any
-	graph    []any
-	idPrefix string
+	graph    []any // graph stores all the serialized object in the graph
 	nextID   map[reflect.Type]int
 	ids      map[reflect.Value]string
 }
 
-func (b *graphBuilder) toGraph() []any {
-	return b.graph
-}
+func (b *graphBuilder) toCompactMaps(graph ...any) (map[string]any, error) {
+	expanded, err := b.toGraph(graph...)
+	if err != nil {
+		return nil, err
+	}
 
-func (b *graphBuilder) add(o any) (context *serializationContext, err error) {
-	v := reflect.ValueOf(o)
-	if v.Type().Kind() != reflect.Pointer {
-		if v.CanAddr() {
-			v = v.Addr()
-		} else {
-			newV := reflect.New(v.Type())
-			newV.Elem().Set(v)
-			v = newV
+	proc := ld.NewJsonLdProcessor()
+	opts := ld.NewJsonLdOptions("")
+	opts.DocumentLoader = offlineDocumentLoader{ctx: b.ctx}
+
+	var compactionContext map[string]any
+	switch len(b.ctx.contextMap) {
+	case 0:
+		return nil, fmt.Errorf("no contexts defined, unable to serialize")
+	case 1:
+		compactionContext = map[string]interface{}{
+			"@context": firstKey(b.ctx.contextMap),
+		}
+	default:
+		prefixes := map[string]any{}
+		for i, url := range sortedKeys(b.ctx.contextMap) {
+			prefixes["ns"+strconv.Itoa(i)] = url
+		}
+		compactionContext = map[string]interface{}{
+			"@context": prefixes,
 		}
 	}
-	val, err := b.toValue(v)
-	// objects with IDs get added to the graph during object traversal
-	if _, isTopLevel := val.(map[string]any); isTopLevel && err == nil {
-		b.graph = append(b.graph, val)
+
+	return proc.Compact(expanded, compactionContext, opts)
+}
+
+func (b *graphBuilder) toGraph(graph ...any) (map[string]any, error) {
+	b.input = graph
+	b.graph = nil
+	// find the top-level context(s)
+	var contextUrls []string
+	for _, o := range graph {
+		ctx := b.findContext(reflect.TypeOf(o))
+		if ctx == nil {
+			return nil, fmt.Errorf("unable to find context for: " + typeName(reflect.TypeOf(o)))
+		}
+		if _, ok := b.prefixes[ctx]; ok {
+			continue
+		}
+		b.prefixes[ctx] = ""
+		contextUrls = append(contextUrls, ctx.contextUrl)
 	}
-	ctx := b.findContext(v.Type())
-	return ctx, err
+
+	if len(b.prefixes) == 0 {
+		return nil, fmt.Errorf("no contexts found for graph")
+	}
+
+	var context any
+	if len(b.prefixes) > 1 {
+		// if there are multiple top-level contexts, set prefixes to be used
+		slices.Sort(contextUrls)
+		contextMap := map[string]string{}
+		for i, u := range contextUrls {
+			for c := range b.prefixes {
+				if c.contextUrl == u {
+					prefix := "ns" + strconv.Itoa(i)
+					b.prefixes[c] = prefix
+					contextMap[prefix] = c.contextUrl
+				}
+				break
+			}
+		}
+		context = contextMap
+	} else {
+		for c := range b.prefixes {
+			context = c.contextUrl
+		}
+	}
+
+	for _, o := range graph {
+		err := b.serializeToGraph(o)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return map[string]any{
+		JsonContextProp: context,
+		JsonGraphProp:   b.graph,
+	}, nil
+}
+
+// serializeToGraph is the top-level call to serialize an map[string]any
+func (b *graphBuilder) serializeToGraph(o any) (err error) {
+	v := reflect.ValueOf(o)
+	val, err := b.toValue(v)
+	b.graph = append(b.graph, val)
+	return err
 }
 
 func (b *graphBuilder) findContext(t reflect.Type) *serializationContext {
-	t = baseType(t) // object may be a pointer, but we want the base types
-	for _, context := range b.ldc {
-		for _, typ := range context.iriToType {
-			if t == typ.typ {
-				return context
-			}
-		}
+	t = baseType(t) // map[string]any may be a pointer, but we want the base types
+	tc := b.ctx.typeToContext[t]
+	if tc != nil {
+		return tc.ctx
 	}
 	return nil
 }
@@ -61,44 +131,29 @@ func (b *graphBuilder) toStructMap(v reflect.Value) (value any, err error) {
 		return nil, fmt.Errorf("expected struct type, got: %v", stringify(v))
 	}
 
-	meta, ok := fieldByType[Type](t)
-	if !ok {
-		return nil, fmt.Errorf("struct does not have ld.Type metadata: %v", stringify(v))
+	// some structs like ExternalIRI do not have type information, but these types must have an @id field,
+	// we will just output this value
+	id, _ := getID(v)
+
+	out := map[string]any{}
+	if id != "" {
+		out[JsonIdProp] = id
 	}
 
-	iri := meta.Tag.Get(GoIriTagName)
-	tc := b.ldc.typeContextForIri(iri)
+	tc := b.ctx.typeToContext[t]
 
-	if tc == nil {
-		context := b.findContext(t)
-		if context == nil {
-			panic("no context for type: " + stringify(t))
+	if tc != nil {
+		hasValues, err := b.writeStructProperties(tc.ctx, tc, v, out)
+		// if we _only_ have an ID set and no other values just output the ID
+		if !hasValues || err != nil {
+			return out, err
 		}
-		tc = context.typeToContext[t]
-	}
-
-	typeProp := JsonTypeProp
-	alias := tc.ctx.iriToAlias[JsonTypeProp]
-	if alias != "" {
-		typeProp = alias
-	}
-
-	out := map[string]any{
-		typeProp: iri,
-	}
-
-	id, hasValues, err := b.writeStructProperties(tc.ctx, tc, v, out)
-	// if we _only_ have an ID set and no other values just output the ID
-	if err != nil {
-		return id, err
-	}
-	if !hasValues && id != "" {
-		return id, nil
+		out[JsonTypeProp] = tc.iri
 	}
 	return out, nil
 }
 
-func (b *graphBuilder) writeStructProperties(context *serializationContext, tc *typeContext, v reflect.Value, out map[string]any) (string, bool, error) {
+func (b *graphBuilder) writeStructProperties(context *serializationContext, tc *typeContext, v reflect.Value, out map[string]any) (bool, error) {
 	hasValues := false
 	id := ""
 
@@ -111,12 +166,12 @@ func (b *graphBuilder) writeStructProperties(context *serializationContext, tc *
 
 		// embedded struct, recursively call this function to get all struct values
 		if f.Anonymous {
-			_, superHasValues, err := b.writeStructProperties(context, tc, v.Field(i), out)
+			superHasValues, err := b.writeStructProperties(context, tc, v.Field(i), out)
 			if superHasValues {
 				hasValues = true
 			}
 			if err != nil {
-				return "", hasValues, err
+				return hasValues, err
 			}
 			continue
 		}
@@ -130,7 +185,7 @@ func (b *graphBuilder) writeStructProperties(context *serializationContext, tc *
 
 		val, err := b.toValue(fieldV)
 		if err != nil {
-			return "", hasValues, err
+			return hasValues, err
 		}
 
 		if isId {
@@ -143,26 +198,26 @@ func (b *graphBuilder) writeStructProperties(context *serializationContext, tc *
 					continue
 				}
 				val, _ = b.ensureID(v.Addr())
-			} else {
-				// compact named IRIs
-				if alias := context.iriToAlias[id]; alias != "" {
-					id = alias
-				}
+				//} else {
+				//	// compact named IRIs
+				//	if alias := context.iriToAlias[id]; alias != "" {
+				//		id = alias
+				//	}
 			}
 		} else {
 			hasValues = true
 		}
 
 		prop := f.Tag.Get(GoIriTagName)
-		alias := context.iriToAlias[prop]
-		if alias != "" {
-			prop = alias
-		}
+		//alias := context.iriToAlias[prop]
+		//if alias != "" {
+		//	prop = alias
+		//}
 
 		out[prop] = val
 	}
 
-	return id, hasValues, nil
+	return hasValues, nil
 }
 
 func isIdField(f reflect.StructField) bool {
@@ -177,8 +232,6 @@ func isRequired(f reflect.StructField) bool {
 	return slices.Contains(strings.Split(f.Tag.Get("json"), ","), "omitempty")
 }
 
-var timeTimeType = reflect.TypeOf(time.Time{})
-
 func (b *graphBuilder) toValue(v reflect.Value) (any, error) {
 	if !v.IsValid() {
 		return nil, nil
@@ -187,7 +240,7 @@ func (b *graphBuilder) toValue(v reflect.Value) (any, error) {
 	t := v.Type()
 
 	switch t {
-	case timeTimeType:
+	case timeType:
 		return formatTime(v.Interface().(time.Time)), nil
 	}
 
@@ -239,7 +292,8 @@ func (b *graphBuilder) ensureID(ptr reflect.Value) (string, error) {
 	v := ptr.Elem()
 	t := v.Type()
 
-	id, err := b.getID(v)
+	// check if the map[string]any has an ID set directly, and use that if so
+	id, err := getID(v)
 	if err != nil {
 		return "", err
 	}
@@ -260,24 +314,6 @@ func (b *graphBuilder) ensureID(ptr reflect.Value) (string, error) {
 	return id, nil
 }
 
-func (b *graphBuilder) getID(v reflect.Value) (string, error) {
-	t := v.Type()
-	if t.Kind() != reflect.Struct {
-		return "", fmt.Errorf("expected struct, got: %v", stringify(v))
-	}
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
-		if isIdField(f) {
-			fv := v.Field(i)
-			if f.Type.Kind() != reflect.String {
-				return "", fmt.Errorf("invalid type for ID field %v in: %v", f, stringify(v))
-			}
-			return fv.String(), nil
-		}
-	}
-	return "", nil
-}
-
 // hasMultipleReferences returns true if the ptr value has multiple references in the input slice
 func (b *graphBuilder) hasMultipleReferences(ptr reflect.Value) bool {
 	if !ptr.IsValid() {
@@ -294,7 +330,7 @@ func (b *graphBuilder) hasMultipleReferences(ptr reflect.Value) bool {
 	return false
 }
 
-// refCount returns the reference count of the value in the container object
+// refCount returns the reference count of the value in the container map[string]any
 func refCount(find any, container any) int {
 	visited := map[reflect.Value]struct{}{}
 	ptrV := reflect.ValueOf(find)
@@ -343,6 +379,17 @@ func refCountR(find reflect.Value, visited map[reflect.Value]struct{}, v reflect
 }
 
 func stringify(o any) string {
+	switch o := o.(type) {
+	case reflect.Value:
+		if !o.IsValid() {
+			return "<invalid reflect value>"
+		}
+		if o.CanInterface() {
+			return stringify(o.Interface())
+		}
+	case reflect.Type:
+		return fmt.Sprintf("%s.%s", o.PkgPath(), o.Name())
+	}
 	return spew.Sdump(o)
 	//if v, ok := o.(reflect.Value); ok {
 	//	if !v.IsValid() {
@@ -354,3 +401,5 @@ func stringify(o any) string {
 	//}
 	//return fmt.Sprintf("%#v", o)
 }
+
+var timeType = reflect.TypeOf(time.Time{})
