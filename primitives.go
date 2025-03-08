@@ -1,55 +1,121 @@
 package ld
 
 import (
-	"fmt"
 	"reflect"
 	"time"
 )
 
-func getPrimitiveValue(typeIRI string, value any) (reflect.Value, error) {
-	if value == nil {
-		return emptyValue, nil
+type URI string
+type PositiveInt int
+type NonNegativeInt int
+type DateTime time.Time
+
+var converters = []converter{
+	{
+		IRI:  "http://www.w3.org/2001/XMLSchema#string",
+		Type: typeOf[string](),
+	},
+	{
+		IRI:  "http://www.w3.org/2001/XMLSchema#anyURI",
+		Type: typeOf[URI](),
+	},
+	{
+		IRI:  "http://www.w3.org/2001/XMLSchema#integer",
+		Type: typeOf[int](),
+	},
+	{
+		IRI:  "http://www.w3.org/2001/XMLSchema#positiveInteger",
+		Type: typeOf[PositiveInt](),
+	},
+	{
+		IRI:  "http://www.w3.org/2001/XMLSchema#nonNegativeInteger",
+		Type: typeOf[NonNegativeInt](),
+	},
+	{
+		IRI:  "http://www.w3.org/2001/XMLSchema#boolean",
+		Type: typeOf[bool](),
+	},
+	{
+		IRI:  "http://www.w3.org/2001/XMLSchema#decimal",
+		Type: typeOf[float64](),
+	},
+	{
+		IRI:         "http://www.w3.org/2001/XMLSchema#dateTime",
+		Type:        typeOf[DateTime](),
+		Serialize:   serializeTime[DateTime],
+		Deserialize: deserializeTime[DateTime],
+	},
+	{
+		IRI:         "http://www.w3.org/2001/XMLSchema#dateTimeStamp",
+		Type:        typeOf[time.Time](),
+		Serialize:   serializeTime[time.Time],
+		Deserialize: deserializeTime[time.Time],
+	},
+}
+
+var iriToConverter = getIriToConverter()
+
+var typeToConverter = getTypeToConverter()
+
+func TypeForIRI(iri string) reflect.Type {
+	c := iriToConverter[iri]
+	if c != nil {
+		return c.Type
 	}
-	switch typeIRI {
-	case "http://www.w3.org/2001/XMLSchema#string", "http://www.w3.org/2001/XMLSchema#anyURI":
-		out := reflect.ValueOf(value)
-		if out.Kind() == reflect.String {
-			return out, nil
-		}
-		return emptyValue, fmt.Errorf("expected string, got: %v", value)
+	return nil
+}
 
-	case "http://www.w3.org/2001/XMLSchema#integer", "http://www.w3.org/2001/XMLSchema#positiveInteger", "http://www.w3.org/2001/XMLSchema#nonNegativeInteger":
-		out := reflect.ValueOf(value)
-		if out.Kind() == reflect.Int {
-			return out, nil
-		}
-		return emptyValue, fmt.Errorf("expected int, got: %v", value)
+func typeOf[T any]() reflect.Type {
+	var t T
+	return reflect.TypeOf(t)
+}
 
-	case "http://www.w3.org/2001/XMLSchema#boolean":
-		out := reflect.ValueOf(value)
-		if out.Kind() == reflect.Bool {
-			return out, nil
-		}
-		return emptyValue, fmt.Errorf("expected bool, got: %v", value)
+type converter struct {
+	Type        reflect.Type
+	IRI         string
+	Serialize   func(any) any
+	Deserialize func(any) any
+}
 
-	case "http://www.w3.org/2001/XMLSchema#decimal":
-		out := reflect.ValueOf(value)
-		if out.Kind() == reflect.Float64 {
-			return out, nil
+func getTypeToConverter() map[reflect.Type]*converter {
+	out := map[reflect.Type]*converter{}
+	for i := range converters {
+		c := &converters[i]
+		if _, ok := out[c.Type]; ok {
+			continue
 		}
-		return emptyValue, fmt.Errorf("expected float, got: %v", value)
-
-	case "http://www.w3.org/2001/XMLSchema#dateTime", "http://www.w3.org/2001/XMLSchema#dateTimeStamp":
-		val, ok := value.(string)
-		if ok {
-			v, err := time.Parse(time.RFC3339, val)
-			if err != nil {
-				// TODO more lenient parsing ?
-				return emptyValue, err
-			}
-			return reflect.ValueOf(v), nil
-		}
-		return emptyValue, fmt.Errorf("expected RFC3339 formatted time, got: %v", value)
+		out[c.Type] = c
 	}
-	return emptyValue, nil
+	return out
+}
+
+func getIriToConverter() map[string]*converter {
+	out := map[string]*converter{}
+	for i := range converters {
+		c := &converters[i]
+		if c.IRI == "" {
+			panic("no IRI set")
+		}
+		if _, ok := out[c.IRI]; ok {
+			panic("duplicate IRI set: " + c.IRI)
+		}
+		out[c.IRI] = c
+	}
+	return out
+}
+
+func serializeTime[T time.Time | DateTime](goValue any) any {
+	if t, ok := goValue.(T); ok {
+		return time.Time(t).Format(time.RFC3339)
+	}
+	return nil
+}
+
+func deserializeTime[T time.Time | DateTime](incoming any) any {
+	s, _ := incoming.(string)
+	if s != "" {
+		parsed, _ := time.Parse(time.RFC3339, s)
+		return T(parsed)
+	}
+	return nil
 }

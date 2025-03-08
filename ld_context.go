@@ -2,16 +2,40 @@ package ld
 
 import (
 	"encoding/json"
-	"github.com/davecgh/go-spew/spew"
+	"fmt"
 	"io"
 	"reflect"
+
+	"github.com/davecgh/go-spew/spew"
 )
 
 // Type is a 0-size data holder property type for type-level ld information
 type Type struct{}
 
 // Context is the holder for all known LD contexts and required definitions
-type Context struct {
+type Context interface {
+	Register(contextURI string, contextDefinition map[string]any, typesAndInstances ...any) Context
+	Merge(ctx Context) Context
+	ToJSON(writer io.Writer, graph ...any) error
+	FromJSON(reader io.Reader) ([]any, error)
+}
+
+const (
+	JsonIdProp        = "@id"
+	JsonTypeProp      = "@type"
+	JsonValueProp     = "@value"
+	JsonContextProp   = "@context"
+	JsonGraphProp     = "@graph"
+	JsonVocabProp     = "@vocab"
+	GoTypeField       = "_"
+	GoIdField         = "ID"
+	GoIriTagName      = "iri"
+	GoTypeTagName     = "type"
+	GoMinTagName      = "min"
+	GoRequiredTagName = "required"
+)
+
+type context struct {
 	contextMap map[string]*serializationContext
 	// iriToType contains full IRIs and aliases to the appropriate typeContext
 	iriToType map[string]*typeContext
@@ -23,8 +47,8 @@ type Context struct {
 	typeToExternalIriFunc map[reflect.Type]func(string) reflect.Value
 }
 
-func NewContext() *Context {
-	return &Context{
+func NewContext() Context {
+	return &context{
 		contextMap:            map[string]*serializationContext{},
 		iriToType:             map[string]*typeContext{},
 		typeToContext:         map[reflect.Type]*typeContext{},
@@ -34,17 +58,18 @@ func NewContext() *Context {
 }
 
 // Merge returns a new context, with the values from both contexts merged together
-func (c *Context) Merge(ctx *Context) *Context {
-	return &Context{
-		contextMap:    merge(c.contextMap, ctx.contextMap),
-		iriToType:     merge(c.iriToType, ctx.iriToType),
-		typeToContext: merge(c.typeToContext, ctx.typeToContext),
-		iriToInstance: merge(c.iriToInstance, ctx.iriToInstance),
+func (c *context) Merge(ctx Context) Context {
+	c2 := ctx.(*context)
+	return &context{
+		contextMap:    merge(c.contextMap, c2.contextMap),
+		iriToType:     merge(c.iriToType, c2.iriToType),
+		typeToContext: merge(c.typeToContext, c2.typeToContext),
+		iriToInstance: merge(c.iriToInstance, c2.iriToInstance),
 	}
 }
 
 // Register registers types and aliases to be used when serializing/deserializing documents
-func (c *Context) Register(contextURI string, ldContext map[string]any, types ...any) *Context {
+func (c *context) Register(contextURI string, ldContext map[string]any, types ...any) Context {
 	ctx := c.getContext(contextURI)
 	ctx.ldContext = merge(ctx.ldContext, ldContext)
 	c.registerContextAliases(ctx, ldContext)
@@ -60,7 +85,7 @@ func (c *Context) Register(contextURI string, ldContext map[string]any, types ..
 }
 
 // registerContextAliases registers compact name aliases for the given IRIs in the given context
-func (c *Context) registerContextAliases(ctx *serializationContext, ldContext map[string]any) {
+func (c *context) registerContextAliases(ctx *serializationContext, ldContext map[string]any) {
 	subContext, _ := ldContext[JsonContextProp].(map[string]any)
 	if subContext != nil {
 		c.registerContextAliases(ctx, subContext)
@@ -89,18 +114,14 @@ func (c *Context) registerContextAliases(ctx *serializationContext, ldContext ma
 }
 
 // registerContextAlias registers compact name aliases for the given IRIs in the given context
-func (c *Context) registerContextAlias(ctx *serializationContext, iri, alias string) {
+func (c *context) registerContextAlias(ctx *serializationContext, iri, alias string) {
 	if ctx.aliasToIri[alias] != "" {
 		panic("duplicate alias set globally: " + alias + "; iri: " + iri + "; existing: " + ctx.aliasToIri[alias])
 	}
 	ctx.aliasToIri[alias] = iri
-	//if ctx.iriToAlias[iri] != "" {
-	//	panic("duplicate iri alias set globally: " + iri + "; alias: " + alias + "; existing: " + ctx.iriToAlias[iri])
-	//}
-	//ctx.iriToAlias[iri] = alias
 }
 
-func (c *Context) getContext(contextUrl string) *serializationContext {
+func (c *context) getContext(contextUrl string) *serializationContext {
 	ctx := c.contextMap[contextUrl]
 	if ctx == nil {
 		ctx = &serializationContext{
@@ -114,53 +135,52 @@ func (c *Context) getContext(contextUrl string) *serializationContext {
 	return ctx
 }
 
-func (c *Context) ToJSON(writer io.Writer, graph ...any) error {
-	out, err := c.ToMaps(graph...)
+func (c *context) ToJSON(writer io.Writer, graph ...any) error {
+	out, err := c.toMaps(graph...)
 	if err != nil {
 		return err
 	}
 	enc := json.NewEncoder(writer)
 	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
 	return enc.Encode(out)
 }
 
-func (c *Context) ToMaps(graph ...any) (values map[string]any, errors error) {
-	// the ld graph is referenced here
-	// traverse the go map[string]anys to output to the graph
+func (c *context) toMaps(graph ...any) (values map[string]any, errors error) {
 	builder := graphBuilder{
-		ctx:      c,
-		prefixes: map[*serializationContext]string{},
-		ids:      map[reflect.Value]string{},
+		ctx:         c,
+		nextID:      map[reflect.Type]int{},
+		ids:         map[reflect.Value]string{},
+		pointerRefs: map[reflect.Value]map[string]any{},
 	}
 	return builder.toCompactMaps(graph...)
 }
 
-func (c *Context) FromMaps(values map[string]any) ([]any, error) {
+func (c *context) FromJSON(reader io.Reader) ([]any, error) {
+	var decoded any
+	dec := json.NewDecoder(reader)
+	err := dec.Decode(&decoded)
+	if err != nil {
+		return nil, err
+	}
+	switch values := decoded.(type) {
+	case map[string]any:
+		return c.fromMaps(values)
+	case []any:
+		return c.fromSlice(values)
+	}
+	return nil, fmt.Errorf("unable to decode, unsupported JSON type: %v", decoded)
+}
+
+func (c *context) fromMaps(values map[string]any) ([]any, error) {
 	rdr := mapReader{ctx: c}
 	return rdr.FromMaps(values)
 }
 
-func (c *Context) FromJSON(reader io.Reader) ([]any, error) {
-	vals := map[string]any{}
-	dec := json.NewDecoder(reader)
-	err := dec.Decode(&vals)
-	if err != nil {
-		return nil, err
-	}
-	return c.FromMaps(vals)
+func (c *context) fromSlice(values []any) ([]any, error) {
+	rdr := mapReader{ctx: c}
+	return rdr.FromSlice(values)
 }
-
-const (
-	JsonIdProp      = "@id"
-	JsonTypeProp    = "@type"
-	JsonValueProp   = "@value"
-	JsonContextProp = "@context"
-	JsonGraphProp   = "@graph"
-	JsonVocabProp   = "@vocab"
-	GoTypeField     = "_"
-	GoIdField       = "ID"
-	GoIriTagName    = "iri"
-)
 
 type typeContext struct {
 	ctx     *serializationContext
@@ -181,7 +201,7 @@ type serializationContext struct {
 	//iriToAlias   map[string]string
 }
 
-func registerFunc(c *Context, fn any) {
+func registerFunc(c *context, fn any) {
 	f := reflect.ValueOf(fn)
 	t := f.Type()
 
@@ -200,7 +220,7 @@ func registerFunc(c *Context, fn any) {
 	}
 }
 
-func registerType(c *Context, ctx *serializationContext, instancePointer any) {
+func registerType(c *context, ctx *serializationContext, instancePointer any) {
 	t := reflect.TypeOf(instancePointer)
 	instance := reflect.ValueOf(instancePointer)
 	t = baseType(t) // types may be passed as pointers, but we want the base types

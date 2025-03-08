@@ -3,19 +3,20 @@ package ld
 import (
 	"errors"
 	"fmt"
-	"github.com/piprate/json-gold/ld"
 	"io"
 	"maps"
 	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/piprate/json-gold/ld"
 )
 
 type mapReader struct {
-	ctx       *Context
+	ctx       *context
 	errs      []error
-	logOut    io.Writer                // logOut if set will result in lots of log messages to be written
+	logOut    io.Writer                // logOut if set will result in lots of log messages about the processing
 	link      bool                     // link indicates this is a second pass to link previously created instances
 	instances map[string]reflect.Value // instances holds id -> initialized instances
 }
@@ -28,18 +29,21 @@ func (c *mapReader) FromMaps(values map[string]any) ([]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	return c.FromSlice(expanded)
+}
 
+func (c *mapReader) FromSlice(expanded []any) ([]any, error) {
 	c.instances = map[string]reflect.Value{}
 
-	// the ld expansion above reads @graph and returns a fully expanded graph, like this:
 	path := []string{JsonGraphProp}
 
 	// one pass to create all the instances
 	_ = c.readSlice(path, anyType, expanded)
 
 	// second pass captures all errors, and links all instances which were created previously
-	c.errs = nil
 	c.link = true
+
+	// the ld expansion above reads @graph and returns a fully expanded graph
 	var out []any
 	for _, value := range c.readSlice(path, anyType, expanded) {
 		out = append(out, value.Interface())
@@ -76,11 +80,26 @@ func (c *mapReader) getNode(path []string, targetType reflect.Type, incoming any
 
 	// type & value is a
 	if typeIRI != "" && value != nil {
-		out, err := getPrimitiveValue(typeIRI, value)
-		if err != nil {
-			c.err(path, "error getting value for type: %s: %v", typeIRI, value)
+		cnv := iriToConverter[typeIRI]
+		if cnv != nil {
+			if cnv.Deserialize != nil {
+				value = cnv.Deserialize(value)
+			}
+			if value != nil {
+				v := reflect.ValueOf(value)
+				// can directly assign, value is good
+				if v.Type().AssignableTo(cnv.Type) {
+					return v
+				}
+				// can convert, still good
+				if v.CanConvert(cnv.Type) {
+					return v.Convert(cnv.Type)
+				}
+				c.err(path, "invalid value: %v", value)
+			}
 		}
-		return out
+
+		return emptyValue
 	}
 
 	tc := c.ctx.iriToType[typeIRI]

@@ -26,7 +26,7 @@ func Test_registeredInstances(t *testing.T) {
 	}}, inst)
 	require.Len(t, ctx, 1)
 
-	g, err := ctx.FromMaps(o{
+	g, err := ctx.(*context).fromMaps(o{
 		"@context": contextName,
 		"@graph": l{
 			"http://example.org/context/an-instance",
@@ -56,12 +56,7 @@ func Test_MultiRegistration(t *testing.T) {
 	ctx = ctx.Register(contextName, o{"@context": o{}}, BType{})
 	require.Len(t, ctx, 1)
 
-	sc := ctx.contextMap[contextName]
-	require.NotNil(t, sc)
-	require.Len(t, ctx.typeToContext, 2)
-	//require.Equal(t, "name", sc.iriToAlias["http://example.org/context/name"])
-
-	maps, err := ctx.ToMaps(AType{
+	maps, err := ctx.(*context).toMaps(AType{
 		Name: "A",
 	}, BType{
 		Name: "B",

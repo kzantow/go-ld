@@ -1,35 +1,60 @@
 package ld
 
 import (
+	"encoding/json"
 	"fmt"
-	"github.com/piprate/json-gold/ld"
+	"os"
 	"reflect"
-	"slices"
 	"strconv"
-	"strings"
-	"time"
 
 	"github.com/davecgh/go-spew/spew"
+	"github.com/piprate/json-gold/ld"
 )
 
 type graphBuilder struct {
-	ctx      *Context
-	prefixes map[*serializationContext]string
-	input    []any
-	graph    []any // graph stores all the serialized object in the graph
-	nextID   map[reflect.Type]int
-	ids      map[reflect.Value]string
+	ctx         *context
+	input       reflect.Value
+	graph       []any // graph stores all the serialized objects in the graph
+	nextID      map[reflect.Type]int
+	ids         map[reflect.Value]string
+	pointerRefs map[reflect.Value]map[string]any // pointerRefs stores references to each serialized pointer
 }
 
 func (b *graphBuilder) toCompactMaps(graph ...any) (map[string]any, error) {
-	expanded, err := b.toGraph(graph...)
+	expanded, err := b.toExpandedMaps(graph...)
 	if err != nil {
 		return nil, err
 	}
 
+	f, _ := os.OpenFile("spdx-encoding-test.expanded.json", os.O_RDWR|os.O_TRUNC|os.O_CREATE, 0777)
+	enc := json.NewEncoder(f)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(expanded)
+
 	proc := ld.NewJsonLdProcessor()
 	opts := ld.NewJsonLdOptions("")
+	// all options:
+	//opts.Base
+	opts.CompactArrays = true
+	//opts.ExpandContext
+	opts.ProcessingMode = ld.JsonLd_1_1
 	opts.DocumentLoader = offlineDocumentLoader{ctx: b.ctx}
+	//opts.Embed
+	//opts.Explicit
+	//opts.RequireAll
+	//opts.FrameDefault
+	//opts.OmitDefault
+	//opts.OmitGraph
+	//opts.UseRdfType
+	//opts.UseNativeTypes
+	//opts.ProduceGeneralizedRdf
+	//opts.InputFormat
+	//opts.Format
+	//opts.Algorithm
+	//opts.UseNamespaces
+	//opts.OutputForm
+	//opts.SafeMode
 
 	var compactionContext map[string]any
 	switch len(b.ctx.contextMap) {
@@ -49,71 +74,108 @@ func (b *graphBuilder) toCompactMaps(graph ...any) (map[string]any, error) {
 		}
 	}
 
-	return proc.Compact(expanded, compactionContext, opts)
+	compact, err := proc.Compact(expanded, compactionContext, opts)
+	return compact, err
 }
 
-func (b *graphBuilder) toGraph(graph ...any) (map[string]any, error) {
-	b.input = graph
+func (b *graphBuilder) toExpandedMaps(graph ...any) ([]any, error) {
+	b.input = reflect.ValueOf(graph)
 	b.graph = nil
-	// find the top-level context(s)
-	var contextUrls []string
-	for _, o := range graph {
-		ctx := b.findContext(reflect.TypeOf(o))
-		if ctx == nil {
-			return nil, fmt.Errorf("unable to find context for: " + typeName(reflect.TypeOf(o)))
-		}
-		if _, ok := b.prefixes[ctx]; ok {
-			continue
-		}
-		b.prefixes[ctx] = ""
-		contextUrls = append(contextUrls, ctx.contextUrl)
-	}
-
-	if len(b.prefixes) == 0 {
-		return nil, fmt.Errorf("no contexts found for graph")
-	}
-
-	var context any
-	if len(b.prefixes) > 1 {
-		// if there are multiple top-level contexts, set prefixes to be used
-		slices.Sort(contextUrls)
-		contextMap := map[string]string{}
-		for i, u := range contextUrls {
-			for c := range b.prefixes {
-				if c.contextUrl == u {
-					prefix := "ns" + strconv.Itoa(i)
-					b.prefixes[c] = prefix
-					contextMap[prefix] = c.contextUrl
-				}
-				break
-			}
-		}
-		context = contextMap
-	} else {
-		for c := range b.prefixes {
-			context = c.contextUrl
-		}
-	}
-
-	for _, o := range graph {
-		err := b.serializeToGraph(o)
+	for _, v := range graph {
+		val := reflect.ValueOf(v)
+		value, err := b.serializeNode(val)
 		if err != nil {
 			return nil, err
 		}
+		b.graph = append(b.graph, value)
 	}
-
-	return map[string]any{
-		JsonContextProp: context,
-		JsonGraphProp:   b.graph,
-	}, nil
+	return b.graph, nil
 }
 
-// serializeToGraph is the top-level call to serialize an map[string]any
-func (b *graphBuilder) serializeToGraph(o any) (err error) {
-	v := reflect.ValueOf(o)
-	val, err := b.toValue(v)
-	b.graph = append(b.graph, val)
-	return err
+// serializeNode outputs the top-level nodes in the graph; these have the behavior that they are always returned in
+// serialized form rather than potentially returning an ID reference. pointers with multiple references will also
+// ensure the @id field is set in order to be referenced later
+func (b *graphBuilder) serializeNode(v reflect.Value) (map[string]any, error) {
+	if !v.IsValid() {
+		return nil, nil
+	}
+	switch v.Kind() {
+	case reflect.Interface:
+		// serialize the underlying data
+		return b.serializeNode(v.Elem())
+	case reflect.Pointer:
+		// output an ID for every top-level element in case they are referenced in multiple locations within the graph
+		id, err := b.getID(v)
+		if err != nil {
+			return nil, err
+		}
+		// serialize the object to the graph
+		value, err := b.serializeSingleValue(v.Elem())
+		if err != nil {
+			return nil, err
+		}
+		value[JsonIdProp] = id
+		return value, nil
+	case reflect.Slice:
+		panic("unexpected slice value")
+	default:
+		return b.serializeSingleValue(v)
+	}
+}
+
+// serializeSingleValue serializes the provided value to an expanded value form, for example:
+//
+//	 {
+//	  "@type": "http://www.w3.org/2001/XMLSchema#string",
+//	  "@value": "Some Value"
+//	}
+//
+// or:
+//
+//	{
+//	 "@id": "_:CreationInfo-1",
+//	 "@type": [
+//	   "https://spdx.org/rdf/3.0.1/terms/Core/CreationInfo"
+//	 ],
+//	 "https://spdx.org/rdf/3.0.1/terms/Core/created": [
+//	 ...
+func (b *graphBuilder) serializeSingleValue(v reflect.Value) (map[string]any, error) {
+	if !v.IsValid() {
+		return nil, nil
+	}
+
+	t := v.Type()
+
+	// check for known primitive conversions first, since some types may be structs
+	if typeToConverter[t] != nil {
+		return b.serializePrimitiveValue(v)
+	}
+
+	switch t.Kind() {
+	case reflect.Interface:
+		return b.serializeSingleValue(v.Elem())
+	case reflect.Pointer:
+		return b.serializeSingleValue(v.Elem())
+	case reflect.Struct:
+		return b.serializeStruct(v)
+	default:
+		panic("unexpected serialization value: " + stringify(v))
+	}
+}
+
+func (b *graphBuilder) serializeSlice(slice reflect.Value) ([]any, error) {
+	if slice.Kind() != reflect.Slice {
+		panic("expected slice")
+	}
+	var out []any
+	for i := 0; i < slice.Len(); i++ {
+		value, err := b.getValueOrID(slice.Index(i))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, value)
+	}
+	return out, nil
 }
 
 func (b *graphBuilder) findContext(t reflect.Type) *serializationContext {
@@ -125,10 +187,10 @@ func (b *graphBuilder) findContext(t reflect.Type) *serializationContext {
 	return nil
 }
 
-func (b *graphBuilder) toStructMap(v reflect.Value) (value any, err error) {
+func (b *graphBuilder) serializeStruct(v reflect.Value) (value map[string]any, err error) {
 	t := v.Type()
 	if t.Kind() != reflect.Struct {
-		return nil, fmt.Errorf("expected struct type, got: %v", stringify(v))
+		panic("expected struct, got: " + stringify(v))
 	}
 
 	// some structs like ExternalIRI do not have type information, but these types must have an @id field,
@@ -136,88 +198,221 @@ func (b *graphBuilder) toStructMap(v reflect.Value) (value any, err error) {
 	id, _ := getID(v)
 
 	out := map[string]any{}
+
+	tc := b.ctx.typeToContext[t]
+	if tc != nil {
+		err = b.writeStructProperties(tc.ctx, tc, v, out)
+		if err != nil {
+			return out, err
+		}
+
+		// always append the type unless the only value we have is an external IRI reference
+		if len(out) > 0 || id == "" || isBlankNodeID(id) {
+			out[JsonTypeProp] = []any{
+				tc.iri,
+			}
+		}
+	}
+
 	if id != "" {
 		out[JsonIdProp] = id
 	}
-
-	tc := b.ctx.typeToContext[t]
-
-	if tc != nil {
-		hasValues, err := b.writeStructProperties(tc.ctx, tc, v, out)
-		// if we _only_ have an ID set and no other values just output the ID
-		if !hasValues || err != nil {
-			return out, err
-		}
-		out[JsonTypeProp] = tc.iri
+	// skip objects with no properties whatsoever
+	if len(out) == 0 {
+		return nil, nil
 	}
 	return out, nil
 }
 
-func (b *graphBuilder) writeStructProperties(context *serializationContext, tc *typeContext, v reflect.Value, out map[string]any) (bool, error) {
-	hasValues := false
-	id := ""
-
+func (b *graphBuilder) writeStructProperties(context *serializationContext, tc *typeContext, v reflect.Value, out map[string]any) error {
 	t := v.Type()
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
-		if skipField(f) {
+		if skipField(f) || isIdField(f) { // ID is set outside of this function
 			continue
 		}
 
 		// embedded struct, recursively call this function to get all struct values
 		if f.Anonymous {
-			superHasValues, err := b.writeStructProperties(context, tc, v.Field(i), out)
-			if superHasValues {
-				hasValues = true
-			}
+			err := b.writeStructProperties(context, tc, v.Field(i), out)
 			if err != nil {
-				return hasValues, err
+				return err
 			}
 			continue
 		}
 
+		optional := !isRequired(f)
 		fieldV := v.Field(i)
 
-		isId := isIdField(f)
-		if !isId && !isRequired(f) && isEmpty(fieldV) {
+		if optional && isEmpty(fieldV) {
 			continue
 		}
 
-		val, err := b.toValue(fieldV)
+		val, err := b.serializeFieldValue(f, fieldV)
 		if err != nil {
-			return hasValues, err
+			return err
 		}
 
-		if isId {
-			id, _ = val.(string)
-			if id == "" {
-				// if this struct does not have an ID set, and does not have multiple references,
-				// it is output inline, it does not need an ID, but does need an ID
-				// when it is moved to the top-level graph and referenced elsewhere
-				if !b.hasMultipleReferences(v.Addr()) {
-					continue
-				}
-				val, _ = b.ensureID(v.Addr())
-				//} else {
-				//	// compact named IRIs
-				//	if alias := context.iriToAlias[id]; alias != "" {
-				//		id = alias
-				//	}
-			}
-		} else {
-			hasValues = true
+		if val == nil && optional {
+			continue
 		}
 
 		prop := f.Tag.Get(GoIriTagName)
-		//alias := context.iriToAlias[prop]
-		//if alias != "" {
-		//	prop = alias
-		//}
-
 		out[prop] = val
 	}
 
-	return hasValues, nil
+	return nil
+}
+
+// serializeFieldValue returns a serialized field value, which must be a slice in expanded form
+func (b *graphBuilder) serializeFieldValue(f reflect.StructField, v reflect.Value) ([]any, error) {
+	if !v.IsValid() {
+		return nil, nil
+	}
+	switch v.Type().Kind() {
+	case reflect.Slice:
+		var out []any
+		for i := 0; i < v.Len(); i++ {
+			val, err := b.getValueOrID(v.Index(i))
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, val)
+		}
+		return []any{out}, nil
+	default:
+		val, err := b.getValueOrID(v)
+		if err != nil {
+			return nil, err
+		}
+		return []any{
+			val,
+		}, nil
+	}
+}
+
+func (b *graphBuilder) serializePrimitiveValue(v reflect.Value) (map[string]any, error) {
+	if !v.IsValid() || !v.CanInterface() {
+		return nil, nil
+	}
+
+	value := v.Interface()
+	c := typeToConverter[v.Type()]
+	if c != nil {
+		if c.Serialize != nil {
+			value = c.Serialize(value)
+		}
+		return map[string]any{
+			JsonTypeProp:  c.IRI,
+			JsonValueProp: value,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("unsupported value type: %s: %v", typeName(v.Type()), value)
+}
+
+// getValueOrID will return an ID for the given struct pointer, creating one if needed
+// and appending the serialized object reference to the top-level graph
+func (b *graphBuilder) getValueOrID(v reflect.Value) (map[string]any, error) {
+	if !v.IsValid() {
+		return nil, nil
+	}
+
+	switch v.Type().Kind() {
+	case reflect.Interface:
+		return b.getValueOrID(v.Elem())
+	case reflect.Pointer:
+		// continue
+	default:
+		// if not a pointer, we don't need to handle ID reference checks
+		return b.serializeSingleValue(v)
+	}
+
+	// if there's an ID set, just output
+	if id, ok := b.ids[v]; ok {
+		// if we have a reference to the initial instance embedded, replace it with an ID and
+		// move the instance to the top-level graph
+		val := b.pointerRefs[v]
+		if val != nil {
+			b.graph = append(b.graph, val)
+			clear(val)
+			val[JsonIdProp] = id
+			delete(b.pointerRefs, v)
+		}
+
+		// finally return an ID reference to the object we appended to the graph
+		return map[string]any{
+			JsonIdProp: id,
+		}, nil
+	}
+
+	// otherwise we need to get a valid id and output the object to the graph
+	id, err := b.getID(v)
+	if err != nil {
+		return nil, err
+	}
+
+	val, err := b.serializeSingleValue(v)
+	val[JsonIdProp] = id // ensure the ID
+	if err != nil {
+		return nil, err
+	}
+
+	const outputFirstReferenceInline = false
+	if outputFirstReferenceInline {
+		return val, nil
+	}
+
+	b.graph = append(b.graph, val)
+
+	// track a reference to this map to update it when we have a second reference
+	//b.pointerRefs[v] = val
+	//return val, nil
+	return map[string]any{
+		JsonIdProp: id,
+	}, nil
+}
+
+// getID will return an ID for the given struct pointer, creating one if needed
+// it does not append structs to the graph
+func (b *graphBuilder) getID(ptr reflect.Value) (string, error) {
+	if ptr.Type().Kind() != reflect.Pointer {
+		panic("expected pointer, got: " + stringify(ptr))
+	}
+	if id, ok := b.ids[ptr]; ok {
+		return id, nil
+	}
+
+	v := ptr.Elem()
+	t := v.Type()
+
+	// check if the struct has an ID set directly, and use that if so
+	id, err := getID(v)
+	if err != nil {
+		return "", err
+	}
+	if id == "" {
+		nextID := b.nextID[t] + 1
+		b.nextID[t] = nextID
+		id = fmt.Sprintf("_:%s-%v", t.Name(), nextID)
+	}
+	b.ids[ptr] = id
+	return id, nil
+}
+
+func stringify(o any) string {
+	switch o := o.(type) {
+	case reflect.Value:
+		if !o.IsValid() {
+			return "<invalid reflect value>"
+		}
+		if o.CanInterface() {
+			return typeName(o.Type()) + ": " + stringify(o.Interface())
+		}
+	case reflect.Type:
+		return fmt.Sprintf("%s.%s", o.PkgPath(), o.Name())
+	}
+	return spew.Sdump(o)
 }
 
 func isIdField(f reflect.StructField) bool {
@@ -229,177 +424,5 @@ func isEmpty(v reflect.Value) bool {
 }
 
 func isRequired(f reflect.StructField) bool {
-	return slices.Contains(strings.Split(f.Tag.Get("json"), ","), "omitempty")
+	return f.Tag.Get("required") == "true"
 }
-
-func (b *graphBuilder) toValue(v reflect.Value) (any, error) {
-	if !v.IsValid() {
-		return nil, nil
-	}
-
-	t := v.Type()
-
-	switch t {
-	case timeType:
-		return formatTime(v.Interface().(time.Time)), nil
-	}
-
-	switch t.Kind() {
-	case reflect.Interface:
-		return b.toValue(v.Elem())
-	case reflect.Pointer:
-		if v.IsNil() {
-			return nil, nil
-		}
-		if !b.hasMultipleReferences(v) {
-			return b.toValue(v.Elem())
-		}
-		return b.ensureID(v)
-	case reflect.Struct:
-		return b.toStructMap(v)
-	case reflect.Slice:
-		var out []any
-		for i := 0; i < v.Len(); i++ {
-			val, err := b.toValue(v.Index(i))
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, val)
-		}
-		return out, nil
-	case reflect.String:
-		return v.String(), nil
-	default:
-		if v.CanInterface() {
-			return v.Interface(), nil
-		}
-		return nil, fmt.Errorf("unable to convert value to maps: %v", stringify(v))
-	}
-}
-
-func formatTime(t time.Time) string {
-	return t.Format(time.RFC3339)
-}
-
-func (b *graphBuilder) ensureID(ptr reflect.Value) (string, error) {
-	if ptr.Type().Kind() != reflect.Pointer {
-		return "", fmt.Errorf("expected pointer, got: %v", stringify(ptr))
-	}
-	if id, ok := b.ids[ptr]; ok {
-		return id, nil
-	}
-
-	v := ptr.Elem()
-	t := v.Type()
-
-	// check if the map[string]any has an ID set directly, and use that if so
-	id, err := getID(v)
-	if err != nil {
-		return "", err
-	}
-	if id == "" {
-		if b.nextID == nil {
-			b.nextID = map[reflect.Type]int{}
-		}
-		nextID := b.nextID[t] + 1
-		b.nextID[t] = nextID
-		id = fmt.Sprintf("_:%s-%v", t.Name(), nextID)
-	}
-	b.ids[ptr] = id
-	val, err := b.toValue(v)
-	if err != nil {
-		return "", err
-	}
-	b.graph = append(b.graph, val)
-	return id, nil
-}
-
-// hasMultipleReferences returns true if the ptr value has multiple references in the input slice
-func (b *graphBuilder) hasMultipleReferences(ptr reflect.Value) bool {
-	if !ptr.IsValid() {
-		return false
-	}
-	count := 0
-	visited := map[reflect.Value]struct{}{}
-	for _, v := range b.input {
-		count += refCountR(ptr, visited, reflect.ValueOf(v))
-		if count > 1 {
-			return true
-		}
-	}
-	return false
-}
-
-// refCount returns the reference count of the value in the container map[string]any
-func refCount(find any, container any) int {
-	visited := map[reflect.Value]struct{}{}
-	ptrV := reflect.ValueOf(find)
-	if !ptrV.IsValid() {
-		return 0
-	}
-	return refCountR(ptrV, visited, reflect.ValueOf(container))
-}
-
-// refCountR recursively searches for the value, find, in the value v
-func refCountR(find reflect.Value, visited map[reflect.Value]struct{}, v reflect.Value) int {
-	if !v.IsValid() {
-		return 0
-	}
-	if _, ok := visited[v]; ok {
-		return 0
-	}
-	visited[v] = struct{}{}
-	switch v.Kind() {
-	case reflect.Interface:
-		return refCountR(find, visited, v.Elem())
-	case reflect.Pointer:
-		if v.IsNil() {
-			return 0
-		}
-		count := refCountR(find, visited, v.Elem())
-		if find.Equal(v) {
-			return count + 1
-		}
-		return count
-	case reflect.Struct:
-		count := 0
-		for i := 0; i < v.NumField(); i++ {
-			count += refCountR(find, visited, v.Field(i))
-		}
-		return count
-	case reflect.Slice:
-		count := 0
-		for i := 0; i < v.Len(); i++ {
-			count += refCountR(find, visited, v.Index(i))
-		}
-		return count
-	default:
-		return 0
-	}
-}
-
-func stringify(o any) string {
-	switch o := o.(type) {
-	case reflect.Value:
-		if !o.IsValid() {
-			return "<invalid reflect value>"
-		}
-		if o.CanInterface() {
-			return stringify(o.Interface())
-		}
-	case reflect.Type:
-		return fmt.Sprintf("%s.%s", o.PkgPath(), o.Name())
-	}
-	return spew.Sdump(o)
-	//if v, ok := o.(reflect.Value); ok {
-	//	if !v.IsValid() {
-	//		return "invalid value"
-	//	}
-	//	if !v.IsZero() && v.CanInterface() {
-	//		o = v.Interface()
-	//	}
-	//}
-	//return fmt.Sprintf("%#v", o)
-}
-
-var timeType = reflect.TypeOf(time.Time{})

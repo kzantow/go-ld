@@ -1,8 +1,9 @@
 package ld
 
 import (
-	"github.com/stretchr/testify/require"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func Test_getId(t *testing.T) {

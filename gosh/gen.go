@@ -29,6 +29,7 @@ func Generate(opts ...Option) {
 		namedIndividuals:  map[string][]*Individual{},
 		nameToIRI:         map[string]string{},
 		iriToType:         map[string]*Class{},
+		pluralizer:        pluralize.NewClient(),
 		renameFunc: func(typ NameType, name string) string {
 			return ""
 		},
@@ -126,6 +127,7 @@ type generator struct {
 	outputValidations bool
 	nameToIRI         map[string]string
 	iriToType         map[string]*Class
+	pluralizer        *pluralize.Client
 	renameFunc        renameFunc
 	useEnums          bool
 }
@@ -324,9 +326,14 @@ func (g *generator) addDirectProperties(c *Class) []Code {
 		if p.Comment != "" {
 			out = append(out, Comment(prefixWith(strings.ReplaceAll(p.Comment, "\\n", " "), name)))
 		}
-		out = append(out, Id(name).Add(g.fieldType(c, p)).Tag(map[string]string{
-			ld.GoIriTagName: p.IRI,
-		}))
+		tags := map[string]string{
+			ld.GoIriTagName:  p.IRI,
+			ld.GoTypeTagName: p.TypeIRI,
+		}
+		if p.MinCount > 0 {
+			tags[ld.GoRequiredTagName] = "true"
+		}
+		out = append(out, Id(name).Add(g.fieldType(c, p)).Tag(tags))
 	}
 	return out
 }
@@ -367,25 +374,12 @@ func (g *generator) isObject(iri string) bool {
 	return g.iriToType[iri] != nil
 }
 
-// baseType returns the golang base type to output, this needs to be kept in sync
-// with ../primitives.go
+// baseType returns the golang base type to output, with "primitive" values based on the type mappings defined in ld.TypeIRI2Go
 func (g *generator) baseType(c *Class, p *Property) (pkg string, typ string) {
 	iri := cleanIRI(p.TypeIRI)
-	switch iri {
-	case "http://www.w3.org/2001/XMLSchema#string", "http://www.w3.org/2001/XMLSchema#anyURI":
-		return "", "string"
-
-	case "http://www.w3.org/2001/XMLSchema#integer", "http://www.w3.org/2001/XMLSchema#positiveInteger", "http://www.w3.org/2001/XMLSchema#nonNegativeInteger":
-		return "", "int"
-
-	case "http://www.w3.org/2001/XMLSchema#boolean":
-		return "", "bool"
-
-	case "http://www.w3.org/2001/XMLSchema#decimal":
-		return "", "float64"
-
-	case "http://www.w3.org/2001/XMLSchema#dateTime", "http://www.w3.org/2001/XMLSchema#dateTimeStamp":
-		return "time", "Time"
+	goTyp := ld.TypeForIRI(iri)
+	if goTyp != nil {
+		return goTyp.PkgPath(), goTyp.Name()
 	}
 
 	c = g.iriToType[iri]
@@ -440,15 +434,17 @@ func (g *generator) appendListTypeGetters(f *File, listTypeName string, listTyp 
 		}
 		c := g.iriToType[iri]
 		if c == listTyp || g.isSubtypeOf(listTyp, c) {
-			f.Func().Params(Id("o").Op("*").Id(listTypeName)).Id(g.className(c.IRI)+iterSuffix).Params().Qual("iter", "Seq2").Index(Id(g.interfaceName(listTyp.IRI)).Op(",").Op("*").Id(g.className(c.IRI))).Block(
-				Return().Qual(ldImport, "TypeIter").Params(Op("*").Id("o"), Id(castPrefix+g.className(c.IRI))),
+			getterName := g.name(NameTypeFunc, g.pluralize(g.className(c.IRI)))
+			castName := g.name(NameTypeFunc, castPrefix+g.className(c.IRI))
+			f.Func().Params(Id("o").Op("*").Id(listTypeName)).Id(getterName).Params().Qual(ldImport, "TypeSeq").Index(Id(g.interfaceName(listTyp.IRI)).Op(",").Op("*").Id(g.className(c.IRI))).Block(
+				Return().Qual(ldImport, "NewTypeSeq").Params(Op("*").Id("o"), Id(castName)),
 			)
 		}
 	}
 }
 
 func (g *generator) pluralize(name string) string {
-	return pluralize.NewClient().Plural(name)
+	return g.pluralizer.Plural(name)
 }
 
 func (g *generator) appendExternalIRI(f *File) {
@@ -474,8 +470,9 @@ func (g *generator) appendExternalIRI(f *File) {
 		if g.isEnum(iri) {
 			continue
 		}
+		castName := g.name(NameTypeFunc, castPrefix+name)
 		f.Func().Params(Id("o").Op("*").Id(structName)).Id(viewPrefix + name).Params().Op("*").Id(name).Block(
-			Return().Id(castPrefix + name).Params(Id("o").Dot("value")),
+			Return().Id(castName).Params(Id("o").Dot("value")),
 		)
 	}
 }
@@ -487,7 +484,8 @@ func (g *generator) appendCastFuncs(f *File) {
 		if g.isEnum(iri) {
 			continue
 		}
-		f.Func().Id(castPrefix+name).Params(Id("o").Any()).Op("*").Id(name).Block(
+		castName := g.name(NameTypeFunc, castPrefix+name)
+		f.Func().Id(castName).Params(Id("o").Any()).Op("*").Id(name).Block(
 			If(Id("o").Op(",").Id("ok").Op(":=").Id("o").Op(".").Params(Id(interfacePrefix+name)).Op(";").Id("ok").Block(
 				Return().Id("o").Op(".").Id(viewPrefix+name).Params(),
 			)),
@@ -495,8 +493,9 @@ func (g *generator) appendCastFuncs(f *File) {
 		)
 	}
 
+	castName := g.name(NameTypeFunc, castPrefix)
 	// append a singular cast function
-	f.Func().Id(castPrefix).Index(Id("T").Id("any")).Params(Id("value").Id("any")).Op("*").Id("T").BlockFunc(func(f *Group) {
+	f.Func().Id(castName).Index(Id("T").Id("any")).Params(Id("value").Id("any")).Op("*").Id("T").BlockFunc(func(f *Group) {
 		f.Var().Id("t").Id("T")
 		f.Switch(Any().Params(Id("t")).Op(".").Params(Type())).BlockFunc(func(f *Group) {
 			for _, name := range keys(g.nameToIRI) {
@@ -504,8 +503,9 @@ func (g *generator) appendCastFuncs(f *File) {
 				if g.isEnum(iri) {
 					continue
 				}
+				castName = g.name(NameTypeFunc, castPrefix+name)
 				f.Case(Id(name)).Block(
-					If(Id("v").Op(",").Id("ok").Op(":=").Any().Params(Id(castPrefix + name).Params(Id("value"))).Op(".").Params(Op("*").Id("T")).Op(";").Id("ok")).Block(
+					If(Id("v").Op(",").Id("ok").Op(":=").Any().Params(Id(castName).Params(Id("value"))).Op(".").Params(Op("*").Id("T")).Op(";").Id("ok")).Block(
 						Return(Id("v")),
 					),
 				)
@@ -514,9 +514,10 @@ func (g *generator) appendCastFuncs(f *File) {
 		f.Panic(Lit("invalid type cast, unknown type: ").Op("+").Qual("reflect", "TypeOf").Params(Id("t")).Op(".").Id("String").Params())
 	})
 
+	castName = g.name(NameTypeFunc, castPrefix)
 	// append "As" function
 	f.Func().Id("As").Index(Id("T").Any().Op(",").Id("R").Any()).Params(Id("value").Any(), Id("fn").Func().Params(Id("v").Op("*").Id("T")).Id("R")).Id("R").Block(
-		Id("v").Op(":=").Id(castPrefix).Index(Id("T")).Params(Id("value")),
+		Id("v").Op(":=").Id(castName).Index(Id("T")).Params(Id("value")),
 		If(Id("v").Op("!=").Nil().Block(
 			Return(Id("fn").Params(Id("v"))),
 		)),
@@ -599,7 +600,7 @@ func (g *generator) setId(c *Class, iri string) Code {
 
 func (g *generator) appendContextRegistration(f *File) {
 	contextCreateName := g.name(NameTypeFunc, "context")
-	f.Func().Id(contextCreateName).Params().Op("*").Qual(ldImport, "Context").BlockFunc(func(f *Group) {
+	f.Func().Id(contextCreateName).Params().Qual(ldImport, "Context").BlockFunc(func(f *Group) {
 		val := Return().Qual(ldImport, "NewContext").Params()
 		for contextURI, contextJSON := range g.contexts {
 			params := []Code{
@@ -675,6 +676,5 @@ var interfacePrefix = "Any"
 var listSuffix = "List"
 var viewPrefix = "as"
 var castPrefix = "cast"
-var iterSuffix = "Iter"
-var ldImport = reflect.TypeOf(ld.Context{}).PkgPath()
+var ldImport = reflect.TypeOf(ld.Type{}).PkgPath()
 var externalIriName = "ExternalIRI"

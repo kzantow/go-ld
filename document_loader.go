@@ -2,11 +2,12 @@ package ld
 
 import (
 	"fmt"
+
 	"github.com/piprate/json-gold/ld"
 )
 
 type offlineDocumentLoader struct {
-	ctx *Context
+	ctx *context
 }
 
 func (d offlineDocumentLoader) LoadDocument(u string) (*ld.RemoteDocument, error) {

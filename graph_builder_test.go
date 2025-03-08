@@ -1,12 +1,13 @@
 package ld
 
 import (
-	"github.com/google/go-cmp/cmp"
-	"github.com/stretchr/testify/require"
 	"reflect"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/require"
 )
 
 func Test_graphBuilder(t *testing.T) {
@@ -143,7 +144,7 @@ func Test_graphBuilder(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			graph := tt.graph()
-			ctx := Context{}
+			ctx := NewContext()
 			contextURI := "http://example.org/uri"
 			ctx.Register(contextURI, tt.context, typ{}, typ2{})
 			expected := tt.expected
@@ -160,7 +161,7 @@ func Test_graphBuilder(t *testing.T) {
 				graphs = graph.(l)
 			}
 			var got any
-			got, err := ctx.ToMaps(graphs...)
+			got, err := ctx.(*context).toMaps(graphs...)
 
 			wantErr := require.NoError
 			if tt.wantErr != nil {

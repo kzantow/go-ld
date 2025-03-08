@@ -135,17 +135,23 @@ func testGraph(t *testing.T, graph l) []any {
 		"@graph":   graph,
 	}
 
-	graph, err := ctx.FromMaps(in)
+	buf := bytes.Buffer{}
+
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	err := enc.Encode(in)
+	require.NoError(t, err)
+
+	graph, err = ctx.FromJSON(&buf)
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	return graph
 }
 
 func testContext() (ld.Context, string) {
 	contextURL := "test"
-	return ld.Context{}.Register(contextURL, testJsonLdContext,
+	return ld.NewContext().Register(contextURL, testJsonLdContext,
 		Package{},
 		File{},
 		File_DevNull,

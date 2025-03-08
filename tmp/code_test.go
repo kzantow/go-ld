@@ -22,7 +22,7 @@ func Test_code(t *testing.T) {
 				Name: "a-pkg",
 			}},
 			PrimaryPurpose: spdx.SoftwarePurpose_Library,
-			AdditionalPurposes: spdx.SoftwarePurposeList{
+			AdditionalPurposes: []spdx.SoftwarePurpose{
 				spdx.SoftwarePurpose_Data,
 				spdx.SoftwarePurpose_Container,
 			},
@@ -33,7 +33,7 @@ func Test_code(t *testing.T) {
 	doc := &spdx.SpdxDocument{}
 	doc.Elements = append(doc.Elements, p)
 
-	for o, p2 := range doc.Elements.PackageIter() {
+	for o, p2 := range doc.Elements.Packages() {
 		fmt.Println("Pkg: " + p2.Name)
 
 		asName := spdx.As(o, func(v *spdx.Package) string {
