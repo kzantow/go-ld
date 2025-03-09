@@ -178,7 +178,7 @@ func (g *generator) Generate() {
 		}
 
 		if c.Comment != "" {
-			f.Comment(prefixWith(strings.ReplaceAll(c.Comment, "\\n", " "), name))
+			f.Comment(prefixWith(fixWhitespace(c.Comment), name))
 		}
 
 		// append the actual struct
@@ -224,7 +224,7 @@ func (g *generator) Generate() {
 
 	g.appendValidations(f)
 	if g.outputFile != "" {
-		must(os.WriteFile(g.name(NameTypeFile, g.outputFile+"_validations.go"), append(commentText, []byte(f.GoString())...), 0777))
+		must(os.WriteFile(g.name(NameTypeFile, g.outputFile+"_validations.go"), append(commentText, formattedSource(f)...), 0777))
 	}
 
 	if g.outputFile == "" {
@@ -233,14 +233,7 @@ func (g *generator) Generate() {
 }
 
 func formattedSource(f *File) []byte {
-	src := []byte(f.GoString())
-	// split the ld.Context{}.Register() argument list
-	parts := regexp.MustCompile(`}},`).Split(string(src), 2)
-	parts[1] = regexp.MustCompile(`, `).ReplaceAllString(parts[1], ",\n")
-	//parts[1] = regexp.MustCompile(`{}, `).ReplaceAllString(parts[1], "{},\n")
-	parts[1] = regexp.MustCompile(`{}\)`).ReplaceAllString(parts[1], "{},\n)")
-	src = get(format.Source([]byte(parts[0]+"}},"+parts[1]), format.Options{}))
-	return src
+	return get(format.Source([]byte(f.GoString()), format.Options{}))
 }
 
 func (g *generator) newCode() *File {
@@ -324,7 +317,7 @@ func (g *generator) addDirectProperties(c *Class) []Code {
 	for _, p := range c.Properties {
 		name := g.fieldName(c, p)
 		if p.Comment != "" {
-			out = append(out, Comment(prefixWith(strings.ReplaceAll(p.Comment, "\\n", " "), name)))
+			out = append(out, Comment(prefixWith(fixWhitespace(p.Comment), name)))
 		}
 		tags := map[string]string{
 			ld.GoIriTagName:  p.IRI,
@@ -336,14 +329,6 @@ func (g *generator) addDirectProperties(c *Class) []Code {
 		out = append(out, Id(name).Add(g.fieldType(c, p)).Tag(tags))
 	}
 	return out
-}
-
-func prefixWith(text string, prefix string) string {
-	prefix = strings.TrimSpace(prefix) + " "
-	if !strings.HasPrefix(text, prefix) {
-		text = prefix + text
-	}
-	return text
 }
 
 func (g *generator) fieldType(c *Class, p *Property) Code {
@@ -541,29 +526,6 @@ func (g *generator) isSubtypeOf(parent *Class, typ *Class) bool {
 	return false
 }
 
-func (g *generator) appendValidations(f *File) {
-	for _, name := range keys(g.nameToIRI) {
-		iri := g.nameToIRI[name]
-		c := g.iriToType[iri]
-
-		f.Func().Params(Id("o").Op("*").Id(g.className(iri))).Id("Validate").Params(Id("visited").Id("map[any]struct{}"), Id("path").Op("...").Op("string")).Index().Id("ValidationError").BlockFunc(func(f *Group) {
-			for _, prop := range c.Properties {
-				for _, validation := range prop.Validations {
-					switch v := validation.(type) {
-					case AllowedIRIValidation:
-						f.Comment("AllowedIRI: " + string(v))
-					case MinIntValidation:
-						f.Comment("MinIntValidation: " + fmt.Sprintf("%v", v))
-					case MatchPatternValidation:
-						f.Comment("MatchPattern: " + string(v))
-					}
-				}
-			}
-			f.Return(Nil())
-		})
-	}
-}
-
 func (g *generator) appendNamedIndividualsForType(f *File, typeIRI string) {
 	for _, ni := range g.namedIndividuals[typeIRI] {
 		varName := g.namedIndividualName(ni)
@@ -606,16 +568,17 @@ func (g *generator) appendContextRegistration(f *File) {
 			params := []Code{
 				Lit(contextURI),
 				getMap(contextJSON),
-				Id(g.externalIRIName()),
+				Line().Id(g.externalIRIName()),
 			}
 			for _, name := range keys(g.nameToIRI) {
 				iri := g.nameToIRI[name]
 				typ := g.iriToType[iri]
-				params = append(params, Id(typ.GoName).Block())
+				params = append(params, Line().Id(typ.GoName).Block())
 				for _, ni := range g.namedIndividuals[iri] {
-					params = append(params, Id(g.namedIndividualName(ni)))
+					params = append(params, Line().Id(g.namedIndividualName(ni)))
 				}
 			}
+			params = append(params, Line())
 			val.Dot("Register").Params(params...)
 		}
 		f.Add(val)
@@ -671,10 +634,26 @@ func unexport(part string) string {
 	return strings.ToLower(part)
 }
 
-var requireMultipleSegments = os.Getenv("REQUIRE_MULTIPLE_SEGMENTS") == "true"
-var interfacePrefix = "Any"
-var listSuffix = "List"
-var viewPrefix = "as"
-var castPrefix = "cast"
-var ldImport = reflect.TypeOf(ld.Type{}).PkgPath()
-var externalIriName = "ExternalIRI"
+func fixWhitespace(s string) string {
+	s = whitespace.ReplaceAllString(s, " ")
+	return strings.TrimSpace(s)
+}
+
+func prefixWith(text string, prefix string) string {
+	prefix = strings.TrimSpace(prefix) + " "
+	if !strings.HasPrefix(text, prefix) {
+		text = prefix + text
+	}
+	return text
+}
+
+var (
+	whitespace              = regexp.MustCompile(`\s+`)
+	requireMultipleSegments = os.Getenv("REQUIRE_MULTIPLE_SEGMENTS") == "true"
+	interfacePrefix         = "Any"
+	listSuffix              = "List"
+	viewPrefix              = "as"
+	castPrefix              = "cast"
+	ldImport                = reflect.TypeOf(ld.Type{}).PkgPath()
+	externalIriName         = "ExternalIRI"
+)

@@ -27,6 +27,4 @@ type Property struct {
 
 type AllowedIRIValidation string
 
-type MinIntValidation int
-
 type MatchPatternValidation string

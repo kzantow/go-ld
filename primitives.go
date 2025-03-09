@@ -1,13 +1,41 @@
 package ld
 
 import (
+	"fmt"
+	"net/url"
 	"reflect"
 	"time"
 )
 
 type URI string
+
+func (u URI) Validate() error {
+	if u == "" { // this is handled by required check
+		return nil
+	}
+	_, err := url.Parse(string(u))
+	return err
+}
+
 type PositiveInt int
+
+func (i PositiveInt) Validate() error {
+	if i < 0 {
+		return fmt.Errorf("positive integer required, got: %v", i)
+	}
+	return nil
+}
+
 type NonNegativeInt int
+
+func (i NonNegativeInt) Validate() error {
+	if i < 0 {
+		return fmt.Errorf("non-negative integer required, got: %v", i)
+	}
+	return nil
+}
+
+// DateTime is a specifically typed time.Time, validation inherently not needed
 type DateTime time.Time
 
 var converters = []converter{
