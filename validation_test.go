@@ -134,8 +134,8 @@ func Test_Validate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := Validate(tt.graph)
-			requireErrorCount(tt.errs)(t, err)
+			err := ValidateGraph(tt.graph)
+			require.Len(t, flattenErrors(err), tt.errs)
 		})
 	}
 }
@@ -174,30 +174,5 @@ type validateExpression struct {
 }
 
 func (v validateExpression) Validate() error {
-	return ValidateExpression("some-prop", v.value, v.pattern)
-}
-
-func requireErrorCount(count int) require.ErrorAssertionFunc {
-	switch count {
-	case 0:
-		return require.NoError
-	case 1:
-		return func(t require.TestingT, err error, i ...interface{}) {
-			_, ok := err.(interface{ Unwrap() []error })
-			if ok {
-				t.Errorf("unexpected error.Join: %v", err)
-			} else {
-				require.Error(t, err)
-			}
-		}
-	default:
-		return func(t require.TestingT, err error, _ ...interface{}) {
-			e, ok := err.(interface{ Unwrap() []error })
-			if ok {
-				require.Len(t, e.Unwrap(), count)
-			} else {
-				t.Errorf("error not error.Join'd: %v", err)
-			}
-		}
-	}
+	return ValidateExpression(v.pattern)(v.value)
 }

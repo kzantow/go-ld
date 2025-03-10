@@ -12,7 +12,6 @@ func main() {
 		gosh.PackageName("v3_0"),
 		gosh.LicenseID("MIT"),
 		gosh.OutputFile("tmp/model.go"),
-		gosh.UseEnums(true),
 		gosh.RenameFunc(renameFunc),
 		gosh.JsonLDContext("https://spdx.org/rdf/3.0.1/spdx-context.jsonld"),
 		gosh.SHACLTypes("https://spdx.org/rdf/3.0.1/spdx-model.ttl"),
@@ -22,8 +21,9 @@ func main() {
 func renameFunc(typ gosh.NameType, name string) string {
 	if typ == gosh.NameTypeField {
 		return replaceSuffixes(name, map[string]string{
-			"Bies": "By",
-			"Tos":  "To",
+			"Bies":          "By",
+			"Tos":           "To",
+			"CreatedUsings": "CreatedUsing",
 		})
 	}
 	switch name {

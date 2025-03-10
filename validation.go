@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
-	"strings"
 )
 
 // Validator interface should be implemented by
@@ -16,18 +15,19 @@ type Validator interface {
 	Validate() error
 }
 
-func Validate(graph any) error {
+// ValidateGraph recursively calls all Validators on all values in the graph and returns a joined error
+// of all the errors found
+func ValidateGraph(graph any) error {
 	var errs []error
-	err := VisitObjectGraph(graph, func(path []string, field reflect.StructField, value reflect.Value) error {
-		// don't double-validate
+	err := VisitObjectGraph(graph, func(path []any, value reflect.Value) error {
+		// don't double-validate, this will be called with both pointer and struct references
 		if elemIs[Validator](value) {
 			return nil
 		}
 		if value.Type().Implements(validatorInterface) {
 			if validator, ok := value.Interface().(Validator); ok {
-				err := validator.Validate()
-				if err != nil {
-					errs = appendJoinedErrs(errs, newValidationError(err, append(path, field.Name)...))
+				for _, err := range flattenErrors(validator.Validate()) {
+					errs = append(errs, newValidationError(err, append(path[:], baseType(value.Type()))...))
 				}
 			}
 		}
@@ -41,7 +41,7 @@ func Validate(graph any) error {
 
 type Validation[T any] func(value T) error
 
-// JoinErrors returns errors.Join'd errors, taking into account nested, flattening these to a single joined set
+// JoinErrors returns errors.Join'd errors, taking into account nested joined errors, flattening these to a single joined set
 func JoinErrors(errs ...error) error {
 	var out []error
 	for _, err := range errs {
@@ -73,31 +73,42 @@ func flattenErrors(err error) []error {
 
 var validatorInterface = reflect.TypeOf((*Validator)(nil)).Elem()
 
-func appendJoinedErrs(errs []error, err error) []error {
-	if err == nil {
-		return errs
-	}
-	if e, ok := err.(interface{ Unwrap() []error }); ok {
-		return append(errs, e.Unwrap()...)
-	}
-	return append(errs, err)
-}
-
 type validationError struct {
-	Path []string
+	Path []any
 	Err  error
 }
 
-func (v validationError) String() string {
-	return strings.Join(v.Path, "/") + ": " + v.Err.Error()
+func (v *validationError) String() string {
+	path := ""
+	for i := 0; i < len(v.Path); i++ {
+		part := v.Path[i]
+		switch p := part.(type) {
+		case int:
+			path += "[" + strconv.Itoa(p) + "]"
+		case reflect.StructField:
+			if !p.Anonymous {
+				path += "." + p.Name
+			}
+		case reflect.Type:
+			path += "<" + p.Name() + ">"
+		default:
+			path += "/" + fmt.Sprint(p)
+		}
+	}
+	return path + ": " + v.Err.Error()
 }
 
-func (v validationError) Error() string {
+func (v *validationError) Error() string {
 	return v.String()
 }
 
-func newValidationError(err error, path ...string) validationError {
-	return validationError{
+func newValidationError(err error, path ...any) *validationError {
+	// if the error is a validation error, prepend the path
+	if vErr, ok := err.(*validationError); ok {
+		vErr.Path = append(path, vErr.Path...)
+		return vErr
+	}
+	return &validationError{
 		Path: path,
 		Err:  err,
 	}
@@ -118,15 +129,21 @@ func ValidateSlice[T any](validation Validation[T]) Validation[[]T] {
 		for i, value := range values {
 			err := validation(value)
 			if err != nil {
-				errs = append(errs, newValidationError(err, strconv.Itoa(i)))
+				errs = append(errs, newValidationError(err, i))
 			}
 		}
 		return JoinErrors(errs...)
 	}
 }
 
+// ValidateProp is used by generated code, typically, to validate a specific property against all defined validations
+// it might have such as whether it is required, matches a pattern, has enough elements, or is in a specific defined set.
+// This function needs to be called with a struct reference and a pointer to the property, e.g. ValidateProp(obj, &obj.Prop, ...)
+// due to looking up field tags and names based on the property reference. This will panic if called any other way.
 func ValidateProp[T any](object any, property *T, validations ...Validation[T]) error {
 	value := reflect.ValueOf(property)
+
+	// object is always a pointer to the base struct
 	o := reflect.ValueOf(object).Elem()
 	var f reflect.StructField
 	for i := 0; i < o.NumField(); i++ {
@@ -139,18 +156,25 @@ func ValidateProp[T any](object any, property *T, validations ...Validation[T]) 
 		panic(fmt.Sprintf("property: %v not found in object: %v", property, object))
 	}
 
-	if value.IsZero() {
-		if f.Tag.Get("required") != "true" {
-			return fmt.Errorf("%s is required", f.Name)
+	var errs []error
+	if f.Anonymous { // inherited type validation
+		if validator, ok := any(property).(Validator); ok {
+			errs = flattenErrors(validator.Validate())
 		}
-		return nil // don't process other validators, this is simply not set
+	} else {
+		// value is pointer to field, which always points to a valid elem
+		if value.Elem().IsZero() {
+			if f.Tag.Get("required") == "true" {
+				return newValidationError(fmt.Errorf("required"), f)
+			}
+			return nil // don't process other validators, this is simply not set and not required
+		}
 	}
 
-	var errs []error
 	for _, validation := range validations {
 		err := validation(*property)
 		if err != nil {
-			errs = append(errs, err)
+			errs = append(errs, newValidationError(err, f))
 		}
 	}
 	return JoinErrors(errs...)
@@ -166,11 +190,7 @@ func ValidateID[T any](validation Validation[string]) Validation[T] {
 	}
 }
 
-type slice[T any] interface {
-	~[]T
-}
-
-func ValidateMinCount[S slice[T], T any](minCount int) Validation[S] {
+func ValidateMinCount[S ~[]T, T any](minCount int) Validation[S] {
 	return func(values S) error {
 		if minCount > len(values) {
 			return fmt.Errorf("must have at least: %v item(s), got: %v", minCount, len(values))

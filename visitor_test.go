@@ -2,9 +2,10 @@ package ld
 
 import (
 	"fmt"
-	"github.com/stretchr/testify/require"
 	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func Test_visitor(t *testing.T) {
@@ -23,13 +24,20 @@ func Test_visitor(t *testing.T) {
 		},
 	}
 
-	err := VisitObjectGraph(v, func(path []string, field reflect.StructField, value reflect.Value) error {
-		fmt.Println(path, field)
-		if intSlice, ok := value.Interface().([]int); ok {
-			fmt.Println(intSlice)
-			intSlice = append(intSlice, 12)
-			value.Set(reflect.ValueOf(intSlice))
+	err := VisitObjectGraph(v, func(path []any, value reflect.Value) error {
+		f := path[len(path)-1]
+		if f, ok := f.(reflect.StructField); ok {
+			if f.Name == "Name" {
+				value.SetString("a new name")
+			}
 		}
+		//fmt.Println(path)
+		//if intSlice, ok := value.Interface().([]int); ok {
+		//	fmt.Println(intSlice)
+		//	//intSlice = append(intSlice, 12)
+		//	newValue := reflect.Append(value, reflect.ValueOf(12))
+		//	value.Set(newValue)
+		//}
 		if mapVal, ok := value.Interface().(map[string]int); ok {
 			fmt.Println(mapVal)
 			mapVal["new"] = 100

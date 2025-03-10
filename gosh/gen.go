@@ -16,14 +16,14 @@ import (
 	"github.com/kzantow/go-ld"
 )
 
-// Generate is responsible for taking a number of options and generating a data model,
-// along with supporting code to stdout or a set of files. By default,
-// the code will use the `model` package, and be output to stdout
+// Generate generates a data model and supporting functions to be able to serialize and deserialize
+// JSON LD documents with compaction and including inhertiance.
 func Generate(opts ...Option) {
 	g := &generator{
 		pkgName:           "model",
 		license:           "UNKNOWN",
 		outputValidations: true,
+		useEnums:          true,
 		classes:           map[string]*Class{},
 		contexts:          map[string]map[string]any{},
 		namedIndividuals:  map[string][]*Individual{},

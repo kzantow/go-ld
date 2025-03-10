@@ -34,7 +34,7 @@ func (g *generator) appendValidations(f *File) {
 				//		),
 
 				if c.ParentIRI != "" {
-					f.Line().Id("o").Dot(g.className(c.ParentIRI)).Dot("Validate").Params()
+					f.Line().Qual(ldImport, "ValidateProp").Params(Id("o"), Op("&").Id("o").Dot(g.className(c.ParentIRI)))
 				}
 				for _, p := range c.Properties {
 					fieldType := g.fieldType(c, p)
@@ -79,7 +79,11 @@ func (g *generator) appendValidations(f *File) {
 						validatePropParams = append(validatePropParams, Line().Add(idCheck))
 					}
 
-					f.Line().Qual(ldImport, "ValidateProp").Params(validatePropParams...)
+					// first 2 params are initialized as object, property --
+					// only append a property validation if we added any validations or if the property is required
+					if len(validatePropParams) > 2 || p.MinCount > 0 {
+						f.Line().Qual(ldImport, "ValidateProp").Params(validatePropParams...)
+					}
 				}
 			})),
 		)

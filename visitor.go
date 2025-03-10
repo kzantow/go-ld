@@ -3,7 +3,6 @@ package ld
 import (
 	"fmt"
 	"reflect"
-	"strconv"
 )
 
 var StopTraversing = fmt.Errorf("stop-traversing-graph")
@@ -12,11 +11,12 @@ var StopTraversing = fmt.Errorf("stop-traversing-graph")
 // step along the traversal, including field properties, pointer and subsequent struct values, elements in
 // slices and both keys and values of maps, as well as some context such as the path within the graph and any
 // containing struct field. The value is always able to have Interface() and Set() called.
-func VisitObjectGraph(graph any, visitor func(path []string, field reflect.StructField, value reflect.Value) error) error {
-	return visitObjectGraph(map[reflect.Value]struct{}{}, nil, reflect.StructField{}, reflect.ValueOf(graph), visitor)
+func VisitObjectGraph(graph any, visitor func(path []any, value reflect.Value) error) error {
+	t := reflect.TypeOf(graph)
+	return visitObjectGraph(map[reflect.Value]struct{}{}, []any{baseType(t)}, reflect.ValueOf(graph), visitor)
 }
 
-func visitObjectGraph(visited map[reflect.Value]struct{}, path []string, field reflect.StructField, v reflect.Value, visitor func([]string, reflect.StructField, reflect.Value) error) error {
+func visitObjectGraph(visited map[reflect.Value]struct{}, path []any, v reflect.Value, visitor func([]any, reflect.Value) error) error {
 	if !v.IsValid() {
 		return nil
 	}
@@ -27,7 +27,7 @@ func visitObjectGraph(visited map[reflect.Value]struct{}, path []string, field r
 
 	var err error
 	if v.CanInterface() {
-		err = visitor(path, field, v)
+		err = visitor(path, v)
 		if err == StopTraversing {
 			return nil
 		} else if err != nil {
@@ -48,13 +48,17 @@ func visitObjectGraph(visited map[reflect.Value]struct{}, path []string, field r
 
 	switch t.Kind() {
 	case reflect.Interface:
-		return visitObjectGraph(visited, path, field, v.Elem(), visitor)
+		return visitObjectGraph(visited, path, v.Elem(), visitor)
 	case reflect.Pointer:
-		return visitObjectGraph(visited, path, field, v.Elem(), visitor)
+		return visitObjectGraph(visited, path, v.Elem(), visitor)
 	case reflect.Struct:
 		for i := 0; i < v.NumField(); i++ {
 			f := t.Field(i)
-			err = visitObjectGraph(visited, append(path, f.Name), f, v.Field(i), visitor)
+			subPath := path[:]
+			if !f.Anonymous {
+				subPath = append(subPath, f)
+			}
+			err = visitObjectGraph(visited, subPath, v.Field(i), visitor)
 			if err != nil {
 				return err
 			}
@@ -65,12 +69,12 @@ func visitObjectGraph(visited map[reflect.Value]struct{}, path []string, field r
 			return nil
 		}
 		for iter.Next() {
-			path := append(path, fmt.Sprintf("%v", iter.Key().Interface()))
-			err = visitObjectGraph(visited, path, field, iter.Key(), visitor)
+			path := append(path[:], fmt.Sprintf("%v", iter.Key().Interface()))
+			err = visitObjectGraph(visited, path, iter.Key(), visitor)
 			if err != nil {
 				return err
 			}
-			err = visitObjectGraph(visited, path, field, iter.Value(), visitor)
+			err = visitObjectGraph(visited, path, iter.Value(), visitor)
 			if err != nil {
 				return err
 			}
@@ -109,7 +113,7 @@ func visitObjectGraph(visited map[reflect.Value]struct{}, path []string, field r
 		//}
 	case reflect.Slice:
 		for i := 0; i < v.Len(); i++ {
-			err = visitObjectGraph(visited, append(path, strconv.Itoa(i)), field, v.Index(i), visitor)
+			err = visitObjectGraph(visited, append(path[:], i), v.Index(i), visitor)
 			if err != nil {
 				return err
 			}
