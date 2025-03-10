@@ -26,15 +26,8 @@ func (g *generator) appendValidations(f *File) {
 
 		validationFunc := Func().Params(Id("o").Op("*").Id(g.className(iri))).Id("Validate").Params().Id("error").Block(
 			Return(Qual(ldImport, "JoinErrors").ParamsFunc(func(f *Group) {
-				// 		ld.ValidateProp(o, &o.DatasetTypes,
-				//			ld.ValidateSlice(ld.ValidateID[DatasetType](ld.ValidateValues[string](
-				//				"https://spdx.org/rdf/3.0.1/terms/Software/ContentIdentifierType/gitoid",
-				//				"https://spdx.org/rdf/3.0.1/terms/Software/ContentIdentifierType/swhid",
-				//			))),
-				//		),
-
 				if c.ParentIRI != "" {
-					f.Line().Qual(ldImport, "ValidateProp").Params(Id("o"), Op("&").Id("o").Dot(g.className(c.ParentIRI)))
+					f.Line().Qual(ldImport, "ValidateProperty").Params(Id("o"), Op("&").Id("o").Dot(g.className(c.ParentIRI)))
 				}
 				for _, p := range c.Properties {
 					fieldType := g.fieldType(c, p)
@@ -68,13 +61,14 @@ func (g *generator) appendValidations(f *File) {
 					if len(allowedIRIs) > 0 {
 						var validateValuesParams []Code
 						for _, allowedIRI := range allowedIRIs {
-							validateValuesParams = append(validateValuesParams, Line().Lit(cleanIRI(allowedIRI)))
+							validateValuesParams = append(validateValuesParams, Line().Id(g.namedIndividualName(&Individual{
+								IRI:     cleanIRI(allowedIRI),
+								TypeIRI: p.TypeIRI,
+							})))
 						}
-						idCheck := Qual(ldImport, "ValidateID").Index(Id(g.className(p.TypeIRI))).Params(
-							Qual(ldImport, "ValidateValues").Params(append(validateValuesParams, Line())...),
-						)
+						idCheck := Qual(ldImport, "ValidateIRI").Params(append(validateValuesParams, Line())...)
 						if g.isList(c, p) {
-							idCheck = Qual(ldImport, "ValidateSlice").Params(idCheck)
+							idCheck = Qual(ldImport, "ValidateAll").Params(idCheck)
 						}
 						validatePropParams = append(validatePropParams, Line().Add(idCheck))
 					}
@@ -82,7 +76,7 @@ func (g *generator) appendValidations(f *File) {
 					// first 2 params are initialized as object, property --
 					// only append a property validation if we added any validations or if the property is required
 					if len(validatePropParams) > 2 || p.MinCount > 0 {
-						f.Line().Qual(ldImport, "ValidateProp").Params(validatePropParams...)
+						f.Line().Qual(ldImport, "ValidateProperty").Params(validatePropParams...)
 					}
 				}
 			})),

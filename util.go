@@ -2,7 +2,6 @@ package ld
 
 import (
 	"cmp"
-	"errors"
 	"path"
 	"reflect"
 	"slices"
@@ -13,17 +12,6 @@ var (
 	emptyValue reflect.Value
 	anyType    = reflect.TypeOf((*any)(nil)).Elem()
 )
-
-// appendErr appends errors, flattening joined errors
-func appendErr(err error, errs ...error) error {
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		return errors.Join(append(joined.Unwrap(), errs...)...)
-	}
-	if err == nil {
-		return errors.Join(errs...)
-	}
-	return errors.Join(append([]error{err}, errs...)...)
-}
 
 // baseType returns the base type if this is a pointer or interface
 func baseType(t reflect.Type) reflect.Type {
@@ -138,4 +126,41 @@ func sortedKeys[K cmp.Ordered, V any](m map[K]V) []K {
 	}
 	slices.Sort(out)
 	return out
+}
+
+func elemImplements[T any](v reflect.Value) bool {
+	switch v.Type().Kind() {
+	case reflect.Pointer, reflect.Interface:
+		e := v.Elem()
+		if !e.IsValid() {
+			return false
+		}
+		if !e.CanInterface() {
+			return false
+		}
+		_, ok := e.Interface().(T)
+		return ok
+	default:
+		return false
+	}
+}
+
+func trimCommonPrefixes(values []string) (prefix string, trimmed []string) {
+	out := values[:]
+	slices.Sort(out)
+	last := len(out) - 1
+	common := 0
+	for ; common < len(out[0]); common++ {
+		if out[0][common] != out[last][common] {
+			break
+		}
+	}
+	if common < 0 {
+		return "", values
+	}
+	prefix = values[0][:common]
+	for i := range out {
+		out[i] = out[i][common:]
+	}
+	return prefix, out
 }
