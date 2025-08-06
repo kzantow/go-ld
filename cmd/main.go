@@ -21,9 +21,10 @@ func main() {
 func renameFunc(typ gosh.NameType, name string) string {
 	if typ == gosh.NameTypeField {
 		return replaceSuffixes(name, map[string]string{
-			"Bies":          "By",
-			"Tos":           "To",
-			"CreatedUsings": "CreatedUsing",
+			"Bies":           "By",
+			"Tos":            "To",
+			"CreatedUsings":  "CreatedUsing",
+			"VerifiedUsings": "VerifiedUsing",
 		})
 	}
 	switch name {

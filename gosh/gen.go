@@ -172,9 +172,14 @@ func (g *generator) Generate() {
 
 		// append the interface for this struct, can be extended
 		if !g.isEnum(c.IRI) {
-			f.Type().Id(interfacePrefix + name).Interface(
-				Id(viewPrefix + name).Params().Op("*").Id(name),
-			)
+			// append the asThing() method to the interface
+			params := []Code{Id(viewPrefix + name).Params().Op("*").Id(name)}
+			if c.ParentIRI != "" {
+				// extend parent types for proper type safety e.g. assign AnyExtension to AnyElement
+				parent := g.iriToType[c.ParentIRI]
+				params = append([]Code{Id(interfacePrefix + parent.GoName)}, params...)
+			}
+			f.Type().Id(interfacePrefix + name).Interface(params...)
 		}
 
 		if c.Comment != "" {
@@ -283,7 +288,17 @@ func (g *generator) isEnum(typeIRI string) bool {
 	}
 	c := g.iriToType[typeIRI]
 	if c != nil {
-		return c.ParentIRI == "" && len(c.Properties) == 0
+		// no parent, no properties, and no children
+		return c.ParentIRI == "" && len(c.Properties) == 0 && !g.hasSubtypes(typeIRI)
+	}
+	return false
+}
+
+func (g *generator) hasSubtypes(iri string) bool {
+	for _, c := range g.classes {
+		if c.ParentIRI == iri {
+			return true
+		}
 	}
 	return false
 }
