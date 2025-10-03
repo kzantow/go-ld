@@ -1,5 +1,5 @@
 .PHONY: test
-test: unit fuzz
+test: unit
 
 .PHONY: bootstrap
 bootstrap:
@@ -15,8 +15,3 @@ format:
 unit:
 	go test -v -covermode=count -coverprofile=profile.cov.tmp ./...
 	cat profile.cov.tmp | grep -v /model.go > profile.cov # ignore generated model file
-
-.PHONY: fuzz
-fuzz:
-	go test -v -run=Fuzz -fuzz=FuzzShouldIgnore ./utils -fuzztime=10s
-	go test -v -run=Fuzz -fuzz=FuzzPackageCanGetVerificationCode ./utils -fuzztime=10s

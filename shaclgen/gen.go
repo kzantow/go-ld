@@ -29,6 +29,7 @@ func Generate(opts ...Option) {
 		namedIndividuals:  map[string][]*Individual{},
 		nameToIRI:         map[string]string{},
 		iriToType:         map[string]*Class{},
+		customTypes:       map[string]string{},
 		pluralizer:        pluralize.NewClient(),
 		renameFunc: func(typ NameType, name string, c *Class) string {
 			return ""
@@ -129,6 +130,7 @@ type generator struct {
 	iriToType         map[string]*Class
 	pluralizer        *pluralize.Client
 	renameFunc        renameFunc
+	customTypes       map[string]string
 	useEnums          bool
 }
 
@@ -212,6 +214,9 @@ func (g *generator) Generate() {
 
 	// append cast functions
 	g.appendCastFuncs(f)
+
+	// append custom type names like ld.URI
+	g.appendCustomTypes(f)
 
 	// append context registration
 	g.appendContextRegistration(f)
@@ -367,7 +372,14 @@ func (g *generator) fieldType(c *Class, p *Property) Code {
 	}
 	t := Id(typ)
 	if pkg != "" {
-		t = Qual(pkg, typ)
+		if pkg == reflect.TypeOf(ld.URI("")).PkgPath() {
+			if g.customTypes[typ] == "" {
+				g.customTypes[typ] = g.name(NameTypeType, typ, nil)
+			}
+			t = Id(g.customTypes[typ])
+		} else {
+			t = Qual(pkg, typ)
+		}
 	}
 	switch {
 	case !isObj && isList, isObj && isEnum && isList:
@@ -578,6 +590,13 @@ func (g *generator) setId(c *Class, iri string) Code {
 		return Id(unexport(ld.GoIdField)).Op(":").Lit(iri).Op(",")
 	}
 	return Id(ld.GoIdField).Op(":").Lit(iri).Op(",")
+}
+
+func (g *generator) appendCustomTypes(f *File) {
+	for typ, alias := range g.customTypes {
+		pkg := reflect.TypeOf(ld.URI("")).PkgPath()
+		f.Type().Id(alias).Op("=").Qual(pkg, typ)
+	}
 }
 
 func (g *generator) appendContextRegistration(f *File) {
