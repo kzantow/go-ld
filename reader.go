@@ -24,8 +24,27 @@ type mapReader struct {
 func (c *mapReader) FromMaps(values map[string]any) ([]any, error) {
 	proc := ld.NewJsonLdProcessor()
 	opts := ld.NewJsonLdOptions("")
+	opts.ProcessingMode = ld.JsonLd_1_1_Frame
 	opts.DocumentLoader = offlineDocumentLoader{ctx: c.ctx}
+	//opts.Embed=            EmbedLast,
+	//opts.Explicit=         false,
+	//opts.RequireAll=       true,
+	opts.FrameDefault = true
+
+	//opts.OmitDefault = true
+	//opts.OmitGraph=        false,
+
+	//opts.UseRdfType = false
+	//opts.UseNativeTypes=   false,
+	//opts.ProduceGeneralizedRdf: false,
+	//opts.InputFormat=      "",
+	//opts.Format=           "",
+	//opts.Algorithm=        AlgorithmURGNA2012,
+	//opts.UseNamespaces=    false,
+	//opts.OutputForm=       "",
+	//opts.SafeMode = true
 	expanded, err := proc.Expand(values, opts)
+	c.log(nil, "expanded graph: %v", expanded)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +97,7 @@ func (c *mapReader) getNode(path []string, targetType reflect.Type, incoming any
 	typeIRI := singleValue[string](values[JsonTypeProp])
 	value, _ := values[JsonValueProp]
 
-	// type & value is a
+	// type & value is an external IRI
 	if typeIRI != "" && value != nil {
 		cnv := iriToConverter[typeIRI]
 		if cnv != nil {
@@ -102,26 +121,24 @@ func (c *mapReader) getNode(path []string, targetType reflect.Type, incoming any
 		return emptyValue
 	}
 
+	// first look up any known named individuals, we do not populate these
+	if v, ok := c.ctx.iriToInstance[id]; ok {
+		return v
+	}
+
+	// if there isn't a named individual, and we don't have a type, it may be a reference in the same document,
+	// but it may not have been created yet, here we just want to return
+	// we may have created this instance already
+	instance, ok := c.instances[id]
+	if ok {
+		return instance
+	}
+
 	tc := c.ctx.iriToType[typeIRI]
 	if tc == nil {
-		if id != "" {
-			// first look up any known named individuals, we do not populate these
-			if v, ok := c.ctx.iriToInstance[id]; ok {
-				return v
-			}
-
-			// if there isn't a named individual, and we don't have a type, it may be a reference in the same document,
-			// but it may not have been created yet, here we just want to return
-			// we may have created this instance already
-			instance, ok := c.instances[id]
-			if ok {
-				return instance
-			}
-
-			if c.link { // only need external IRI references on the second pass
-				// if we have no type and don't have an instance created, return an external IRI
-				return c.externalIRI(path, targetType, id)
-			}
+		if id != "" && c.link { // only need external IRI references on the second pass
+			// if we have no type and don't have an instance created, return an external IRI
+			return c.externalIRI(path, targetType, id)
 		}
 		return emptyValue
 	}
@@ -139,6 +156,10 @@ func (c *mapReader) readObject(path []string, targetType reflect.Type, id string
 	// we created this instance already during the first pass, look up that instance
 	instance, ok := c.instances[id]
 	if !ok {
+		instance, ok = c.ctx.iriToInstance[id]
+		if ok {
+			return instance
+		}
 		// if not, create it now
 		instance = reflect.New(baseType(tc.typ)) // New(T) returns *T
 		if id != "" {

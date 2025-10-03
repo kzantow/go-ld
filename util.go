@@ -2,6 +2,7 @@ package ld
 
 import (
 	"cmp"
+	"os"
 	"path"
 	"reflect"
 	"slices"
@@ -9,6 +10,7 @@ import (
 )
 
 var (
+	debug      = os.Getenv("GO_LD_DEBUG") == "true"
 	emptyValue reflect.Value
 	anyType    = reflect.TypeOf((*any)(nil)).Elem()
 )
@@ -80,8 +82,8 @@ func isPrimitive(t reflect.Type) bool {
 	}
 }
 
-// fieldByType returns a field defined on type StructType matching the provided type, t
-func fieldByType[StructType any](t reflect.Type) (reflect.StructField, bool) {
+// FieldByType returns a field defined on type StructType matching the provided type, t
+func FieldByType[StructType any](t reflect.Type) (reflect.StructField, bool) {
 	var v StructType
 	typ := reflect.TypeOf(v)
 	for i := 0; i < t.NumField(); i++ {
@@ -106,7 +108,14 @@ func merge[K comparable, V any](maps ...map[K]V) map[K]V {
 			continue
 		}
 		for k, v := range m {
-			if _, ok := out[k]; ok {
+			if in1, ok := out[k]; ok {
+				// existing value, recursively merge nested maps
+				map1, ok1 := any(in1).(map[K]V)
+				map2, ok2 := any(v).(map[K]V)
+				if ok1 && ok2 {
+					out[k] = any(merge[K, V](map1, map2)).(V)
+					continue
+				}
 				panic("Context key already defined: " + stringify(k))
 			}
 			out[k] = v

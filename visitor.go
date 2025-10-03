@@ -37,15 +37,6 @@ func visitObjectGraph(visited map[reflect.Value]struct{}, path []any, v reflect.
 
 	t := v.Type()
 
-	//// do not double-visit values, certain types will result in `.Interface().(<thing>)` being satisfied
-	//switch t.Kind() {
-	//case reflect.Interface:
-	//default:
-	//	// only visit values that the visitor can call `.Interface()` on
-	//	if v.CanInterface() {
-	//	}
-	//}
-
 	switch t.Kind() {
 	case reflect.Interface:
 		return visitObjectGraph(visited, path, v.Elem(), visitor)
@@ -58,7 +49,8 @@ func visitObjectGraph(visited map[reflect.Value]struct{}, path []any, v reflect.
 			if !f.Anonymous {
 				subPath = append(subPath, f)
 			}
-			err = visitObjectGraph(visited, subPath, v.Field(i), visitor)
+			fv := v.Field(i)
+			err = visitObjectGraph(visited, subPath, fv, visitor)
 			if err != nil {
 				return err
 			}
@@ -79,38 +71,6 @@ func visitObjectGraph(visited map[reflect.Value]struct{}, path []any, v reflect.
 				return err
 			}
 		}
-		//keys := v.MapKeys()
-		//for i := 0; i < len(keys); i++ {
-		//	key := keys[0]
-		//	value := v.MapIndex(key)
-		//	settableKey := reflect.New(reflect.TypeOf(key))
-		//	settableKey = settableKey.Elem()
-		//	settableKey.Set(key)
-		//	err = visitObjectGraph(visited, settableKey, visitor)
-		//	if err != nil {
-		//		return err
-		//	}
-		//	if settableKey != key {
-		//
-		//	}
-		//
-		//	settableValue := reflect.New(reflect.TypeOf(key))
-		//	settableValue = settableValue.Elem()
-		//	settableValue.Set(value)
-		//	err = visitObjectGraph(visited, settableValue, visitor)
-		//	if err != nil {
-		//		return err
-		//	}
-		//	if settableValue != value {
-		//		v.SetMapIndex(key, settableValue)
-		//	}
-		//}
-		//for i := 0; i < ; i++ {
-		//	err = visitObjectGraph(visited, v.Index(i), visitor)
-		//	if err != nil {
-		//		return err
-		//	}
-		//}
 	case reflect.Slice:
 		for i := 0; i < v.Len(); i++ {
 			err = visitObjectGraph(visited, append(path[:], i), v.Index(i), visitor)
@@ -118,6 +78,7 @@ func visitObjectGraph(visited map[reflect.Value]struct{}, path []any, v reflect.
 				return err
 			}
 		}
+	default:
 	}
 	return nil
 }

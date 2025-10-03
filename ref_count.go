@@ -2,14 +2,22 @@ package ld
 
 import "reflect"
 
-// refCount returns the reference count of the value in the container map[string]any
-func refCount(find any, container any) int {
-	visited := map[reflect.Value]struct{}{}
-	ptrV := reflect.ValueOf(find)
-	if !ptrV.IsValid() {
+// RefCount returns the reference count of the value in the container map[string]any
+func RefCount(find any, container any) int {
+	findV, ok := find.(reflect.Value)
+	if !ok {
+		findV = reflect.ValueOf(find)
+	}
+	if !findV.IsValid() {
 		return 0
 	}
-	return refCountR(ptrV, visited, reflect.ValueOf(container))
+
+	containerV, ok := container.(reflect.Value)
+	if !ok {
+		containerV = reflect.ValueOf(container)
+	}
+
+	return refCountR(findV, map[reflect.Value]struct{}{}, containerV)
 }
 
 // refCountR recursively searches for the value, find, in the value v

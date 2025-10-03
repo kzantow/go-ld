@@ -3,7 +3,7 @@ package ld_test
 import (
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	"github.com/google/go-cmp/cmp"
 )
 
 func Test_decode(t *testing.T) {
@@ -13,10 +13,11 @@ func Test_decode(t *testing.T) {
 		want  func() a
 	}{
 		{
+			name: "simple graph",
 			graph: l{
 				o{"@type": "software_Package", "@id": "pkg-1", "name": "pkg 1"},
 				o{"@type": "software_File", "@id": "file-1", "contents": "file 1"},
-				o{"@type": "relationship", "from": "file-1", "to": l{"pkg-1"}},
+				o{"@type": "Relationship", "from": "file-1", "to": l{"pkg-1"}},
 			},
 			want: func() a {
 				p := &Package{Element: Element{ID: "pkg-1", Name: "pkg 1"}}
@@ -28,7 +29,9 @@ func Test_decode(t *testing.T) {
 		{
 			name: "top level named individual",
 			graph: l{
-				"/dev/null", // named individual
+				o{
+					"@id": "https://example.org/iri/file/dev/null",
+				},
 			},
 			want: func() a {
 				return l{File_DevNull}
@@ -39,11 +42,12 @@ func Test_decode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			graph := testGraph(t, tt.graph)
-			got := toJSON(t, graph)
 
 			want := tt.want()
-			expected := toJSON(t, want)
-			require.JSONEq(t, expected, got)
+
+			if diff := cmp.Diff(want, graph); diff != "" {
+				t.Fatalf("(-want +got):\n%s", diff)
+			}
 		})
 	}
 }

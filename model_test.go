@@ -16,12 +16,13 @@ type o = map[string]any // object
 type l = []any          // list
 type a = any            // any
 
-var testJsonLdContext = o{
+var testJsonLdContext = o{"@context": o{
 	"type":             "@type",
 	"spdxId":           "@id",
 	"spdx":             "https://spdx.org/rdf/3.0.1/terms/",
 	"software_Package": "https://spdx.org/rdf/3.0.1/terms/Software/Package",
 	"software_File":    "https://spdx.org/rdf/3.0.1/terms/Software/File",
+	"Relationship":     "https://spdx.org/rdf/3.0.1/terms/Core/relationship",
 	"software_primaryPurpose": o{
 		"@context": o{
 			"@vocab": "https://spdx.org/rdf/3.0.1/terms/Software/SoftwarePurpose/",
@@ -34,6 +35,10 @@ var testJsonLdContext = o{
 			"@vocab": "https://spdx.org/rdf/3.0.1/terms/Software/SoftwarePurpose/",
 		},
 		"@id":   "https://spdx.org/rdf/3.0.1/terms/Software/additionalPurpose",
+		"@type": "@vocab",
+	},
+	"from": o{
+		"@id":   "https://spdx.org/rdf/3.0.1/terms/Core/from",
 		"@type": "@vocab",
 	},
 	"to": o{
@@ -49,12 +54,15 @@ var testJsonLdContext = o{
 		"@id":   "https://spdx.org/rdf/3.0.1/terms/Core/element",
 		"@type": "@vocab",
 	},
+	"contents": o{
+		"@id":   "https://spdx.org/rdf/3.0.1/terms/Software/File/contents",
+		"@type": "http://www.w3.org/2001/XMLSchema#string",
+	},
 	"name": o{
 		"@id":   "https://spdx.org/rdf/3.0.1/terms/Core/name",
 		"@type": "http://www.w3.org/2001/XMLSchema#string",
 	},
-	"/dev/null": "https://example.org/iri/file/dev/null",
-}
+}}
 
 type Document struct {
 	_        ld.Type     `iri:"https://spdx.org/rdf/3.0.1/terms/Core/Document"`
@@ -91,16 +99,16 @@ type Package struct {
 }
 
 type File struct {
-	_ ld.Type `iri:"file"`
+	_ ld.Type `iri:"https://spdx.org/rdf/3.0.1/terms/Software/File"`
 	Element
-	Contents string `iri:"contents"`
+	Contents string `iri:"https://spdx.org/rdf/3.0.1/terms/Software/File/contents"`
 }
 
 type Relationship struct {
-	_    ld.Type `iri:"relationship"`
+	_    ld.Type `iri:"https://spdx.org/rdf/3.0.1/terms/Core/relationship"`
 	ID   string  `iri:"@id"`
-	From any     `iri:"from"`
-	To   []any   `iri:"to"`
+	From any     `iri:"https://spdx.org/rdf/3.0.1/terms/Core/from"`
+	To   []any   `iri:"https://spdx.org/rdf/3.0.1/terms/Core/to"`
 }
 
 type AnyRelationship interface {
@@ -115,7 +123,7 @@ var File_DevNull = &File{Element: Element{ID: "https://example.org/iri/file/dev/
 
 // SubRelationship implements inheritance by embedding
 type SubRelationship struct {
-	_ ld.Type `iri:"sub-relationship"`
+	_ ld.Type `iri:"https://spdx.org/rdf/3.0.1/terms/Core/sub-relationship"`
 	Relationship
 }
 
@@ -150,7 +158,7 @@ func testGraph(t *testing.T, graph l) []any {
 }
 
 func testContext() (ld.Context, string) {
-	contextURL := "test"
+	contextURL := "https://example.org/test-context"
 	return ld.NewContext().Register(contextURL, testJsonLdContext,
 		Package{},
 		File{},

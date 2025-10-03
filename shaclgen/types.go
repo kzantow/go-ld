@@ -1,4 +1,4 @@
-package gosh
+package shaclgen
 
 type Individual struct {
 	IRI     string
@@ -9,7 +9,9 @@ type Individual struct {
 
 type Class struct {
 	IRI        string
+	Abstract   bool
 	GoName     string
+	Kind       string
 	Comment    string
 	ParentIRI  string
 	Properties []*Property

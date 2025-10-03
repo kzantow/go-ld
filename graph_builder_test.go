@@ -1,8 +1,6 @@
 package ld
 
 import (
-	"reflect"
-	"strconv"
 	"testing"
 	"time"
 
@@ -12,30 +10,45 @@ import (
 
 func Test_graphBuilder(t *testing.T) {
 	type typ struct {
-		_     Type      `iri:"t-iri"`
+		_     Type      `iri:"http://t-iri"`
 		Id    string    `iri:"@id"`
-		Str   string    `iri:"str-iri"`
-		Bool  bool      `iri:"bool-iri"`
-		Int   int       `iri:"int-iri"`
-		Float float64   `iri:"float-iri"`
-		Time  time.Time `iri:"time-iri"`
+		Str   string    `iri:"http://str-iri"`
+		Bool  bool      `iri:"http://bool-iri"`
+		Int   int       `iri:"http://int-iri"`
+		Float float64   `iri:"http://float-iri"`
+		Time  time.Time `iri:"http://time-iri"`
 	}
 
 	type typ2 struct {
-		_          Type   `iri:"t2-iri"`
+		_          Type   `iri:"http://t2-iri"`
 		Identifier string `iri:"@id"`
-		T1         *typ   `iri:""`
+		T1         *typ   `iri:"http://t2-to-t1-iri"`
 	}
 
 	typContext := o{
-		"t":    "t-iri",
-		"t2":   "t2-iri",
-		"s":    "str-iri",
-		"b":    "bool-iri",
-		"i":    "int-iri",
-		"f":    "float-iri",
-		"tm":   "time-iri",
-		"t2t1": "t2-to-t1-iri",
+		"t":  "http://t-iri",
+		"t2": "http://t2-iri",
+		"s": o{
+			"@id":   "http://str-iri",
+			"@type": "http://www.w3.org/2001/XMLSchema#string",
+		},
+		"b": o{
+			"@id":   "http://bool-iri",
+			"@type": "http://www.w3.org/2001/XMLSchema#boolean",
+		},
+		"i": o{
+			"@id":   "http://int-iri",
+			"@type": "http://www.w3.org/2001/XMLSchema#integer",
+		},
+		"f": o{
+			"@id":   "http://float-iri",
+			"@type": "http://www.w3.org/2001/XMLSchema#decimal",
+		},
+		"tm": o{
+			"@id":   "http://time-iri",
+			"@type": "http://www.w3.org/2001/XMLSchema#dateTimeStamp",
+		},
+		"t2t1": "http://t2-to-t1-iri",
 	}
 
 	contextWithIdTypeOverride := merge(typContext, o{
@@ -43,9 +56,7 @@ func Test_graphBuilder(t *testing.T) {
 		"aliased-id":   "@id",
 	})
 
-	localId := func(typ any, i int) string {
-		return "_:" + reflect.TypeOf(typ).Name() + "-" + strconv.Itoa(i)
-	}
+	contextURI := "http://example.org/uri"
 
 	tests := []struct {
 		name     string
@@ -67,12 +78,14 @@ func Test_graphBuilder(t *testing.T) {
 				}
 			},
 			expected: o{
-				"@type":     "t-iri",
-				"str-iri":   "str-val",
-				"bool-iri":  true,
-				"int-iri":   101,
-				"float-iri": 940.33,
-				"time-iri":  mar25noon.Format(time.RFC3339),
+				"@context":         contextURI,
+				"@type":            "http://t-iri",
+				"@id":              "_:typ-1",
+				"http://str-iri":   expanded("str-val"),
+				"http://bool-iri":  expanded(true),
+				"http://int-iri":   expanded(101),
+				"http://float-iri": expanded(940.33),
+				"http://time-iri":  expanded(mar25noon),
 			},
 		},
 		{
@@ -88,13 +101,14 @@ func Test_graphBuilder(t *testing.T) {
 				}
 			},
 			expected: o{
-				"@type": "t",
-				//"@id":   localId(typ{}, 1),
-				"s":  "str-val",
-				"b":  true,
-				"i":  101,
-				"f":  940.33,
-				"tm": mar25noon.Format(time.RFC3339),
+				"@context": contextURI,
+				"@type":    "t",
+				"@id":      "_:typ-1",
+				"s":        "str-val",
+				"b":        true,
+				"i":        101,
+				"f":        940.33,
+				"tm":       mar25noon.Format(time.RFC3339),
 			},
 		},
 		{
@@ -104,6 +118,8 @@ func Test_graphBuilder(t *testing.T) {
 				return &typ{}
 			},
 			expected: o{
+				"@context":     contextURI,
+				"aliased-id":   "_:typ-1",
 				"aliased-type": "t",
 			},
 		},
@@ -123,19 +139,24 @@ func Test_graphBuilder(t *testing.T) {
 					},
 				}
 			},
-			expected: l{
-				o{
-					"aliased-type": "t2",
-					"t2t1":         localId(typ{}, 1),
-				},
-				o{
-					"aliased-type": "t2",
-					"t2t1":         localId(typ{}, 1),
-				},
-				o{
-					"aliased-type": "t",
-					"aliased-id":   localId(typ{}, 1),
-					"s":            "a-val",
+			expected: o{
+				"@context": contextURI,
+				"@graph": l{
+					o{
+						"aliased-type": "t",
+						"aliased-id":   "_:typ-1",
+						"s":            "a-val",
+					},
+					o{
+						"aliased-type": "t2",
+						"aliased-id":   "_:typ2-1",
+						"t2t1":         "_:typ-1",
+					},
+					o{
+						"aliased-type": "t2",
+						"aliased-id":   "_:typ2-2",
+						"t2t1":         "_:typ-1",
+					},
 				},
 			},
 		},
@@ -143,22 +164,16 @@ func Test_graphBuilder(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			graph := tt.graph()
 			ctx := NewContext()
-			contextURI := "http://example.org/uri"
-			ctx.Register(contextURI, tt.context, typ{}, typ2{})
+			ctx.Register(contextURI, o{"@context": tt.context}, typ{}, typ2{})
 			expected := tt.expected
-			if _, ok := tt.expected.(l); !ok {
-				expected = l{expected}
-			}
-			expected = o{
-				"@context": contextURI,
-				"@graph":   expected,
-			}
 
 			var graphs l
-			if _, ok := graph.(l); ok {
-				graphs = graph.(l)
+			graph := tt.graph()
+			if g, ok := graph.(l); ok {
+				graphs = g
+			} else {
+				graphs = append(graphs, graph)
 			}
 			var got any
 			got, err := ctx.(*context).toMaps(graphs...)
@@ -174,5 +189,35 @@ func Test_graphBuilder(t *testing.T) {
 				t.Fatal(d)
 			}
 		})
+	}
+}
+
+func expanded[T any](value T) any {
+	var v any = value
+	t := ""
+	var out any
+	switch v := v.(type) {
+	case string:
+		t = "http://www.w3.org/2001/XMLSchema#string"
+		out = v
+	case bool:
+		t = "http://www.w3.org/2001/XMLSchema#boolean"
+		out = v
+	case float32, float64:
+		t = "http://www.w3.org/2001/XMLSchema#decimal"
+		out = v
+	case byte, int, int8, int16, int32, int64:
+		t = "http://www.w3.org/2001/XMLSchema#integer"
+		out = v
+	case time.Time:
+		t = "http://www.w3.org/2001/XMLSchema#dateTimeStamp"
+		out = v.Format(time.RFC3339)
+	default:
+		panic("unsupported type")
+	}
+
+	return o{
+		JsonTypeProp:  t,
+		JsonValueProp: out,
 	}
 }

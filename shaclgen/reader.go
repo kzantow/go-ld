@@ -1,4 +1,4 @@
-package gosh
+package shaclgen
 
 import (
 	"bytes"
@@ -34,6 +34,7 @@ func ParseSHACL(url string, ttl []byte) (map[string]*Class, []*Individual) {
 		out := &Class{
 			IRI:     cleanIRI(class.Subject.String()),
 			Comment: getComment(used, g, class.Subject),
+			Kind:    getNodeKind(used, g, class.Subject),
 		}
 		if _, ok := iriToClass[out.IRI]; ok {
 			panic("duplicate type definition: " + out.IRI)
@@ -56,7 +57,8 @@ func ParseSHACL(url string, ttl []byte) (map[string]*Class, []*Individual) {
 			log("  property:", class.Subject.String(), "path", path.Object.String())
 
 			if path.Object.Equal(rdfType) {
-				log("  ABSTRACT TYPE MARKER!?")
+				log("marking class %v as abstract due to path requirement:", out.GoName, path)
+				out.Abstract = true
 				continue
 			}
 
@@ -163,6 +165,14 @@ func ParseSHACL(url string, ttl []byte) (map[string]*Class, []*Individual) {
 	return iriToClass, individuals
 }
 
+func getNodeKind(used usedFunc, g *rdf2go.Graph, subject rdf2go.Term) string {
+	propNodeKind := oneOptional(used, g.All(subject, shaclNodeKind, nil))
+	if propNodeKind != nil {
+		return cleanIRI(propNodeKind.Object.RawValue())
+	}
+	return ""
+}
+
 func getComment(used usedFunc, g *rdf2go.Graph, subject rdf2go.Term) string {
 	allComments := g.All(subject, rdfComment, nil)
 	var comment *rdf2go.Triple
@@ -195,17 +205,21 @@ func parseIntegerValue(count *rdf2go.Triple) int {
 }
 
 var (
-	rdfType            = rdf2go.NewResource("http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
-	rdfFirst           = rdf2go.NewResource("http://www.w3.org/1999/02/22-rdf-syntax-ns#first")
-	rdfRest            = rdf2go.NewResource("http://www.w3.org/1999/02/22-rdf-syntax-ns#rest")
-	rdfSubclassOf      = rdf2go.NewResource("http://www.w3.org/2000/01/rdf-schema#subClassOf")
-	rdfComment         = rdf2go.NewResource("http://www.w3.org/2000/01/rdf-schema#comment")
-	rdfLabel           = rdf2go.NewResource("http://www.w3.org/2000/01/rdf-schema#label")
+	rdfType       = rdf2go.NewResource("http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
+	rdfFirst      = rdf2go.NewResource("http://www.w3.org/1999/02/22-rdf-syntax-ns#first")
+	rdfRest       = rdf2go.NewResource("http://www.w3.org/1999/02/22-rdf-syntax-ns#rest")
+	rdfSubclassOf = rdf2go.NewResource("http://www.w3.org/2000/01/rdf-schema#subClassOf")
+	rdfComment    = rdf2go.NewResource("http://www.w3.org/2000/01/rdf-schema#comment")
+	rdfLabel      = rdf2go.NewResource("http://www.w3.org/2000/01/rdf-schema#label")
+	//rdfSchemaRange      = rdf2go.NewResource("http://www.w3.org/2000/01/rdf-schema#range")
 	owlClass           = rdf2go.NewResource("http://www.w3.org/2002/07/owl#Class")
 	owlNamedIndividual = rdf2go.NewResource("http://www.w3.org/2002/07/owl#NamedIndividual")
-	//owlObjectProperty = rdf2go.NewResource("http://www.w3.org/2002/07/owl#ObjectProperty")
+	//owlObjectProperty   = rdf2go.NewResource("http://www.w3.org/2002/07/owl#ObjectProperty")
+	//owlDatatypeProperty = rdf2go.NewResource("http://www.w3.org/2002/07/owl#DatatypeProperty")
 	//shaclNodeShape    = rdf2go.NewResource("http://www.w3.org/ns/shacl#NodeShape")
-	//shaclNodeKind     = rdf2go.NewResource("http://www.w3.org/ns/shacl#nodeKind")
+	//shaclIRI            = rdf2go.NewResource("http://www.w3.org/ns/shacl#IRI")
+	//shaclBlankNodeOrIRI = rdf2go.NewResource("http://www.w3.org/ns/shacl#BlankNodeOrIRI")
+	shaclNodeKind = rdf2go.NewResource("http://www.w3.org/ns/shacl#nodeKind")
 	shaclProperty = rdf2go.NewResource("http://www.w3.org/ns/shacl#property")
 	shaclClass    = rdf2go.NewResource("http://www.w3.org/ns/shacl#class")
 	shaclPath     = rdf2go.NewResource("http://www.w3.org/ns/shacl#path")

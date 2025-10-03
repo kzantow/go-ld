@@ -21,12 +21,27 @@ func Test_readerAliasFields(t *testing.T) {
 	}
 
 	typContext := o{
-		"t":  "https://example.org/test-iri",
-		"s":  "https://example.org/test-iri/str-iri",
-		"b":  "https://example.org/test-iri/bool-iri",
-		"i":  "https://example.org/test-iri/int-iri",
-		"f":  "https://example.org/test-iri/float-iri",
-		"tm": "https://example.org/test-iri/time-iri",
+		"t": "https://example.org/test-iri",
+		"s": o{
+			"@id":   "https://example.org/test-iri/str-iri",
+			"@type": "http://www.w3.org/2001/XMLSchema#string",
+		},
+		"b": o{
+			"@id":   "https://example.org/test-iri/bool-iri",
+			"@type": "http://www.w3.org/2001/XMLSchema#boolean",
+		},
+		"i": o{
+			"@id":   "https://example.org/test-iri/int-iri",
+			"@type": "http://www.w3.org/2001/XMLSchema#integer",
+		},
+		"f": o{
+			"@id":   "https://example.org/test-iri/float-iri",
+			"@type": "http://www.w3.org/2001/XMLSchema#decimal",
+		},
+		"tm": o{
+			"@id":   "https://example.org/test-iri/time-iri",
+			"@type": "http://www.w3.org/2001/XMLSchema#dateTimeStamp",
+		},
 	}
 
 	idTypeAliasedContext := merge(typContext, o{
@@ -42,10 +57,8 @@ func Test_readerAliasFields(t *testing.T) {
 		wantErr  require.ErrorAssertionFunc
 	}{
 		{
-			name: "all aliases, @context prop",
-			context: o{
-				"@context": typContext,
-			},
+			name:    "all aliases, @context prop",
+			context: typContext,
 			graph: o{
 				"@type": "t",
 				"s":     "joe",
@@ -89,12 +102,27 @@ func Test_readerAliasFields(t *testing.T) {
 			name:    "full IRI, no aliases",
 			context: o{},
 			graph: o{
-				"@type":                                  "https://example.org/test-iri",
-				"https://example.org/test-iri/str-iri":   "joe",
-				"https://example.org/test-iri/bool-iri":  true,
-				"https://example.org/test-iri/int-iri":   12,
-				"https://example.org/test-iri/float-iri": 39.11,
-				"https://example.org/test-iri/time-iri":  mar25noon.Format(time.RFC3339),
+				"@type": "https://example.org/test-iri",
+				"https://example.org/test-iri/str-iri": o{
+					"@type":  "http://www.w3.org/2001/XMLSchema#string",
+					"@value": "joe",
+				},
+				"https://example.org/test-iri/bool-iri": o{
+					"@type":  "http://www.w3.org/2001/XMLSchema#boolean",
+					"@value": true,
+				},
+				"https://example.org/test-iri/int-iri": o{
+					"@type":  "http://www.w3.org/2001/XMLSchema#integer",
+					"@value": 12,
+				},
+				"https://example.org/test-iri/float-iri": o{
+					"@type":  "http://www.w3.org/2001/XMLSchema#decimal",
+					"@value": 39.11,
+				},
+				"https://example.org/test-iri/time-iri": o{
+					"@type":  "http://www.w3.org/2001/XMLSchema#dateTimeStamp",
+					"@value": mar25noon.Format(time.RFC3339),
+				},
 			},
 			expected: func() any {
 				return &typ{
@@ -110,12 +138,27 @@ func Test_readerAliasFields(t *testing.T) {
 			name:    "full IRI, all aliases",
 			context: typContext,
 			graph: o{
-				"@type":                                  "https://example.org/test-iri",
-				"https://example.org/test-iri/str-iri":   "joe",
-				"https://example.org/test-iri/bool-iri":  true,
-				"https://example.org/test-iri/int-iri":   12,
-				"https://example.org/test-iri/float-iri": 39.11,
-				"https://example.org/test-iri/time-iri":  mar25noon.Format(time.RFC3339),
+				"@type": "https://example.org/test-iri",
+				"https://example.org/test-iri/str-iri": o{
+					"@type":  "http://www.w3.org/2001/XMLSchema#string",
+					"@value": "joe",
+				},
+				"https://example.org/test-iri/bool-iri": o{
+					"@type":  "http://www.w3.org/2001/XMLSchema#boolean",
+					"@value": true,
+				},
+				"https://example.org/test-iri/int-iri": o{
+					"@type":  "http://www.w3.org/2001/XMLSchema#integer",
+					"@value": 12,
+				},
+				"https://example.org/test-iri/float-iri": o{
+					"@type":  "http://www.w3.org/2001/XMLSchema#decimal",
+					"@value": 39.11,
+				},
+				"https://example.org/test-iri/time-iri": o{
+					"@type":  "http://www.w3.org/2001/XMLSchema#dateTimeStamp",
+					"@value": mar25noon.Format(time.RFC3339),
+				},
 			},
 			expected: func() any {
 				return &typ{
@@ -131,12 +174,21 @@ func Test_readerAliasFields(t *testing.T) {
 			name:    "mixed IRI and aliases",
 			context: typContext,
 			graph: o{
-				"@type":                                 "t",
-				"https://example.org/test-iri/str-iri":  "joe",
-				"https://example.org/test-iri/bool-iri": true,
-				"https://example.org/test-iri/int-iri":  12,
-				"f":                                     39.11,
-				"https://example.org/test-iri/time-iri": mar25noon.Format(time.RFC3339),
+				"@type": "t",
+				"https://example.org/test-iri/str-iri": o{
+					"@type":  "http://www.w3.org/2001/XMLSchema#string",
+					"@value": "joe",
+				},
+				"b": true,
+				"https://example.org/test-iri/int-iri": o{
+					"@type":  "http://www.w3.org/2001/XMLSchema#integer",
+					"@value": 12,
+				},
+				"f": 39.11,
+				"https://example.org/test-iri/time-iri": o{
+					"@type":  "http://www.w3.org/2001/XMLSchema#dateTimeStamp",
+					"@value": mar25noon.Format(time.RFC3339),
+				},
 			},
 			expected: func() any {
 				return &typ{
@@ -152,12 +204,12 @@ func Test_readerAliasFields(t *testing.T) {
 			name:    "id and type aliases",
 			context: idTypeAliasedContext,
 			graph: o{
-				"myType":   "t",
-				"str-iri":  "joe",
-				"bool-iri": true,
-				"int-iri":  12,
-				"f":        39.11,
-				"time-iri": mar25noon.Format(time.RFC3339),
+				"myType": "t",
+				"s":      "joe",
+				"b":      true,
+				"i":      12,
+				"f":      39.11,
+				"tm":     mar25noon.Format(time.RFC3339),
 			},
 			expected: func() any {
 				return &typ{
@@ -176,7 +228,7 @@ func Test_readerAliasFields(t *testing.T) {
 			expected := tt.expected()
 			contextURI := "http://example.org/uri"
 
-			ctx := NewContext().Register(contextURI, tt.context,
+			ctx := NewContext().Register(contextURI, o{"@context": tt.context},
 				// register an empty instance of the returned type:
 				reflect.New(reflect.TypeOf(expected).Elem()).Interface())
 			graph := tt.graph
@@ -196,8 +248,10 @@ func Test_readerAliasFields(t *testing.T) {
 			wantErr(t, err)
 
 			got = gotList
-			if _, ok := tt.graph.(l); !ok {
-				got = gotList[0]
+			if _, ok := expected.(l); !ok {
+				if len(gotList) > 0 {
+					got = gotList[0]
+				}
 			}
 
 			d := cmp.Diff(expected, got)

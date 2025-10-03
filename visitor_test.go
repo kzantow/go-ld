@@ -15,7 +15,7 @@ func Test_visitor(t *testing.T) {
 		Map   map[string]int
 	}
 
-	v := typ{
+	v := &typ{
 		Name:  "a name",
 		Slice: []int{2, 4, 6},
 		Map: map[string]int{
@@ -28,6 +28,7 @@ func Test_visitor(t *testing.T) {
 		f := path[len(path)-1]
 		if f, ok := f.(reflect.StructField); ok {
 			if f.Name == "Name" {
+				require.Equal(t, value.String(), "a name")
 				value.SetString("a new name")
 			}
 		}

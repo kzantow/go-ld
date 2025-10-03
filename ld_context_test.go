@@ -9,65 +9,89 @@ import (
 
 func Test_registeredInstances(t *testing.T) {
 	type AType struct {
-		_     Type   `iri:"http://example.org/context/thing-a"`
-		ID    string `iri:"@id"`
-		Name  string `iri:"http://example.org/context/name"`
-		thing []any
+		_      Type   `iri:"https://example.org/context/thing-a"`
+		ID     string `iri:"@id"`
+		Name   string `iri:"https://example.org/context/name"`
+		Values []any  `iri:"https://example.org/context/values"`
 	}
 
 	inst := &AType{
-		ID:   "http://example.org/context/an-instance",
+		ID:   "https://example.org/context/an-instance",
 		Name: "an-instance",
 	}
 
-	contextName := "http://example.org/context"
+	contextName := "https://example.org/context"
 	ctx := NewContext().Register(contextName, o{"@context": o{
-		"name": "http://example.org/context/name",
+		"thing-a": "https://example.org/context/thing-a",
+		"name": o{
+			"@type": "http://www.w3.org/2001/XMLSchema#string",
+			"@id":   "https://example.org/context/name",
+		},
+		"values": o{
+			"@type": "@vocab",
+			"@id":   "https://example.org/context/values",
+		},
 	}}, inst)
-	require.Len(t, ctx, 1)
 
 	g, err := ctx.(*context).fromMaps(o{
 		"@context": contextName,
-		"@graph": l{
-			"http://example.org/context/an-instance",
+		//"@graph": l{
+		//	o{
+		"@type": "thing-a",
+		"name":  "some-name",
+		"values": l{
+			"https://example.org/context/an-instance",
 		},
+		//	},
+		//},
 	})
 	require.NoError(t, err)
-	require.Equal(t, inst, g[0])
+
+	got := g[0].(*AType)
+	require.Equal(t, "some-name", got.Name)
+	require.Len(t, got.Values, 1)
+	require.Equal(t, inst, got.Values[0])
 }
 
 func Test_MultiRegistration(t *testing.T) {
 	type AType struct {
-		_    Type   `iri:"http://example.org/context/thing-a"`
-		Name string `iri:"http://example.org/context/name"`
+		_    Type   `iri:"https://example.org/context/thing-a"`
+		AnID string `iri:"@id"`
+		Name string `iri:"https://example.org/context/name"`
 	}
 
-	contextName := "http://example.org/context"
+	contextName := "https://example.org/context"
 	ctx := NewContext().Register(contextName, o{"@context": o{
-		"name": "http://example.org/context/name",
+		"name": o{
+			"@type": "http://www.w3.org/2001/XMLSchema#string",
+			"@id":   "https://example.org/context/name",
+		},
 	}}, AType{})
-	require.Len(t, ctx, 1)
+	require.Len(t, ctx.(*context).contextMap, 1)
 
 	type BType struct {
-		_    Type   `iri:"http://example.org/context/thing-b"`
-		Name string `iri:"http://example.org/context/name"`
+		_         Type   `iri:"https://example.org/context/thing-b"`
+		AnotherID string `iri:"@id"`
+		Name      string `iri:"https://example.org/context/name"`
 	}
 
 	ctx = ctx.Register(contextName, o{"@context": o{}}, BType{})
-	require.Len(t, ctx, 1)
+	require.Len(t, ctx.(*context).contextMap, 1)
 
-	maps, err := ctx.(*context).toMaps(AType{
+	maps, err := ctx.(*context).toMaps(&AType{
+		AnID: "id1",
 		Name: "A",
-	}, BType{
-		Name: "B",
+	}, &BType{
+		AnotherID: "id2",
+		Name:      "B",
 	})
 	require.NoError(t, err)
 
 	diff := cmp.Diff(o{
-		"@context": "http://example.org/context",
+		"@context": "https://example.org/context",
 		"@graph": l{
-			o{"@type": "http://example.org/context/thing-a", "name": "A"},
-			o{"@type": "http://example.org/context/thing-b", "name": "B"},
+			o{"@type": "https://example.org/context/thing-a", "name": "A", "@id": "id1"},
+			o{"@type": "https://example.org/context/thing-b", "name": "B", "@id": "id2"},
 		},
 	}, maps)
 	if diff != "" {

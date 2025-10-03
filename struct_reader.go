@@ -120,5 +120,8 @@ func GetID(v any) (string, error) {
 	if v == nil {
 		return "", fmt.Errorf("value is nil")
 	}
+	if v, ok := v.(reflect.Value); ok {
+		return getID(v)
+	}
 	return getID(reflect.ValueOf(v))
 }

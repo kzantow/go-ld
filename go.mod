@@ -1,8 +1,6 @@
 module github.com/kzantow/go-ld
 
-go 1.23
-
-toolchain go1.23.5
+go 1.23.0
 
 require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
@@ -15,7 +13,7 @@ require (
 	github.com/deiu/rdf2go v0.0.0-20241212211204-b661ba0dfd25
 	github.com/gertd/go-pluralize v0.2.1
 	github.com/google/go-cmp v0.6.0
-	github.com/piprate/json-gold v0.5.1-0.20241210232033-19254b3ec65b
+	github.com/piprate/json-gold v0.7.0
 	mvdan.cc/gofumpt v0.7.0
 )
 

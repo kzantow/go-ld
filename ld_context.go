@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 
 	"github.com/davecgh/go-spew/spew"
+	"github.com/piprate/json-gold/ld"
 )
 
 // Type is a 0-size data holder property type for type-level ld information
@@ -31,7 +33,7 @@ const (
 	GoIdField         = "ID"
 	GoIriTagName      = "iri"
 	GoTypeTagName     = "type"
-	GoMinTagName      = "min"
+	GoNodeKindTagName = "node-kind"
 	GoRequiredTagName = "required"
 )
 
@@ -72,6 +74,7 @@ func (c *context) Merge(ctx Context) Context {
 func (c *context) Register(contextURI string, ldContext map[string]any, types ...any) Context {
 	ctx := c.getContext(contextURI)
 	ctx.ldContext = merge(ctx.ldContext, ldContext)
+	ctx.parsedLdContext = ld.NewContext(ldContext, nil)
 	c.registerContextAliases(ctx, ldContext)
 	for _, typ := range types {
 		switch {
@@ -82,6 +85,30 @@ func (c *context) Register(contextURI string, ldContext map[string]any, types ..
 		}
 	}
 	return c
+}
+
+// TypeAliases returns all the registered types and IRIs with corresponding aliases
+func (c *context) TypeAliases() ([]reflect.Type, map[string]string) {
+	iriToAlias := map[string]string{}
+	for _, cm := range c.contextMap {
+		for alias, iri := range cm.aliasToIri {
+			iriToAlias[iri] = alias
+		}
+	}
+	var out []reflect.Type
+	for t := range c.typeToContext {
+		out = append(out, t)
+	}
+	return out, iriToAlias
+}
+
+// LDContexts returns all the registered JSON-LD contexts
+func (c *context) LDContexts() map[string]map[string]any {
+	out := map[string]map[string]any{}
+	for uri, cm := range c.contextMap {
+		out[uri] = cm.ldContext
+	}
+	return out
 }
 
 // registerContextAliases registers compact name aliases for the given IRIs in the given context
@@ -150,7 +177,7 @@ func (c *context) toMaps(graph ...any) (values map[string]any, errors error) {
 	builder := graphBuilder{
 		ctx:         c,
 		nextID:      map[reflect.Type]int{},
-		ids:         map[reflect.Value]string{},
+		ids:         map[uintptr]string{},
 		pointerRefs: map[reflect.Value]map[string]any{},
 	}
 	return builder.toCompactMaps(graph...)
@@ -183,17 +210,19 @@ func (c *context) fromSlice(values []any) ([]any, error) {
 }
 
 type typeContext struct {
-	ctx     *serializationContext
-	typ     reflect.Type
-	iri     string
-	alias   string
-	setters map[string]func(instance reflect.Value, value reflect.Value)
+	ctx              *serializationContext
+	typ              reflect.Type
+	iri              string
+	alias            string
+	setters          map[string]func(instance reflect.Value, value reflect.Value)
+	blankNodeAllowed bool
 }
 
 type serializationContext struct {
 	contextUrl string
 	// the full JSON LD context provided
-	ldContext map[string]any
+	ldContext       map[string]any
+	parsedLdContext *ld.Context
 	// aliasToIri contains field aliases to the respective IRIs
 	aliasToIri map[string]string
 	// aliasContext
@@ -227,20 +256,20 @@ func registerType(c *context, ctx *serializationContext, instancePointer any) {
 
 	tc := c.typeToContext[t]
 	if tc == nil {
-		meta, ok := fieldByType[Type](t)
+		meta, ok := FieldByType[Type](t)
 		if ok {
 			iri := meta.Tag.Get(GoIriTagName)
 			if iri == "" {
 				panic("no type IRI specified for: " + spew.Sdump(instancePointer))
 			}
 			tc = &typeContext{
-				iri:     iri,
-				ctx:     ctx,
-				typ:     t,
-				setters: map[string]func(instance reflect.Value, value reflect.Value){},
+				iri:              iri,
+				ctx:              ctx,
+				typ:              t,
+				setters:          map[string]func(instance reflect.Value, value reflect.Value){},
+				blankNodeAllowed: strings.Contains(meta.Tag.Get(GoNodeKindTagName), "BlankNode"),
 			}
 			c.iriToType[tc.iri] = tc
-			//ctx.iriToAlias[tc.iri] = tc.compact
 			c.typeToContext[t] = tc
 		}
 	}

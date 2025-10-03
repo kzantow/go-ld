@@ -113,7 +113,7 @@ func Test_refCount(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cnt := refCount(tt.checkObj, tt.checkIn)
+			cnt := RefCount(tt.checkObj, tt.checkIn)
 			if cnt != tt.expected {
 				t.Errorf("wrong reference count: %v != %v", tt.expected, cnt)
 			}
