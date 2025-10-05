@@ -9,6 +9,48 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func Test_nestedDeserialization(t *testing.T) {
+	type t1 struct {
+		_     Type   `iri:"https://example.org/test-1"`
+		Id    string `iri:"@id"`
+		Child any    `iri:"https://example.org/test-1/child"`
+	}
+
+	contextURI := "http://example.org/uri"
+
+	ctx := NewContext().Register(contextURI, o{"@context": o{
+		"t": "https://example.org/test-1",
+		"child": o{
+			"@id":   "https://example.org/test-1/child",
+			"@type": "@vocab",
+		},
+	}}, t1{})
+
+	graph, err := ctx.(*context).fromMaps(o{
+		"@context": contextURI,
+		"@graph": l{
+			o{
+				"@id":   "_:t1",
+				"@type": "t",
+				"child": "_:t2",
+			},
+			o{
+				"@id":   "_:t2",
+				"@type": "t",
+				"child": "_:t3",
+			},
+			o{
+				"@id":   "_:t3",
+				"@type": "t",
+				"child": "_:t1",
+			},
+		},
+	})
+	got := graph[0].(*t1)
+	require.NoError(t, err)
+	require.True(t, got.Child.(*t1).Child != nil)
+}
+
 func Test_readerAliasFields(t *testing.T) {
 	type typ struct {
 		_     Type      `iri:"https://example.org/test-iri"`

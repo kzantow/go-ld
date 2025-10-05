@@ -121,24 +121,26 @@ func (c *mapReader) getNode(path []string, targetType reflect.Type, incoming any
 		return emptyValue
 	}
 
-	// first look up any known named individuals, we do not populate these
-	if v, ok := c.ctx.iriToInstance[id]; ok {
-		return v
-	}
-
-	// if there isn't a named individual, and we don't have a type, it may be a reference in the same document,
-	// but it may not have been created yet, here we just want to return
-	// we may have created this instance already
-	instance, ok := c.instances[id]
-	if ok {
-		return instance
-	}
-
 	tc := c.ctx.iriToType[typeIRI]
 	if tc == nil {
-		if id != "" && c.link { // only need external IRI references on the second pass
-			// if we have no type and don't have an instance created, return an external IRI
-			return c.externalIRI(path, targetType, id)
+		if id != "" {
+			// first look up any known named individuals, we do not populate these
+			if v, ok := c.ctx.iriToInstance[id]; ok {
+				return v
+			}
+
+			// if there isn't a named individual, and we don't have a type, it may be a reference in the same document,
+			// but it may not have been created yet, here we just want to return
+			// we may have created this instance already
+			instance, ok := c.instances[id]
+			if ok {
+				return instance
+			}
+
+			if c.link { // only need external IRI references on the second pass
+				// if we have no type and don't have an instance created, return an external IRI
+				return c.externalIRI(path, targetType, id)
+			}
 		}
 		return emptyValue
 	}
