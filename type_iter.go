@@ -2,27 +2,21 @@ package ld
 
 import "iter"
 
+func SliceOf[To, From any, List ~[]From](values List) []To {
+	var out []To
+	for _, v := range values {
+		if cast, ok := any(v).(To); ok {
+			out = append(out, cast)
+		}
+	}
+	return out
+}
+
 type TypeSeq[Element, View any] iter.Seq2[Element, View]
-
-func (s TypeSeq[Element, View]) Elements() []Element {
-	var out []Element
-	for e := range s {
-		out = append(out, e)
-	}
-	return out
-}
-
-func (s TypeSeq[Element, View]) Views() []View {
-	var out []View
-	for _, v := range s {
-		out = append(out, v)
-	}
-	return out
-}
 
 func (s TypeSeq[Element, View]) Len() int {
 	cnt := 0
-	for _ = range s {
+	for range s {
 		cnt++
 	}
 	return cnt

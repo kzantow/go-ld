@@ -24,6 +24,8 @@ func Generate(opts ...Option) {
 		license:           "UNKNOWN",
 		outputValidations: true,
 		useEnums:          true,
+		flatStruct:        false,
+		gettersSetters:    false,
 		classes:           map[string]*Class{},
 		contexts:          map[string]map[string]any{},
 		namedIndividuals:  map[string][]*Individual{},
@@ -76,6 +78,18 @@ func LicenseID(spdxLicenseID string) Option {
 func UseEnums(useEnums bool) Option {
 	return func(generator *generator) {
 		generator.useEnums = useEnums
+	}
+}
+
+func UseFlatStruct(useFlatStruct bool) Option {
+	return func(generator *generator) {
+		generator.flatStruct = useFlatStruct
+	}
+}
+
+func GenerateGettersSetters(gettersSetters bool) Option {
+	return func(generator *generator) {
+		generator.gettersSetters = gettersSetters
 	}
 }
 
@@ -132,6 +146,8 @@ type generator struct {
 	renameFunc        renameFunc
 	customTypes       map[string]string
 	useEnums          bool
+	flatStruct        bool
+	gettersSetters    bool
 }
 
 func (g *generator) Generate() {
@@ -174,34 +190,29 @@ func (g *generator) Generate() {
 
 		// append the interface for this struct, can be extended
 		if !g.isEnum(c.IRI) {
-			// append the asThing() method to the interface
-			params := []Code{Id(viewPrefix + name).Params().Op("*").Id(name)}
-			if c.ParentIRI != "" {
-				// extend parent types for proper type safety e.g. assign AnyExtension to AnyElement
-				parent := g.iriToType[c.ParentIRI]
-				params = append([]Code{Id(interfacePrefix + parent.GoName)}, params...)
-			}
-			f.Type().Id(interfacePrefix + name).Interface(params...)
+			f.Type().Id(interfacePrefix + name).Interface(g.appendInterfaceDefinition(c)...)
 		}
 
 		if c.Comment != "" {
 			f.Comment(prefixWith(fixWhitespace(c.Comment), name))
 		}
 
-		// append the actual struct
-		f.Type().Id(name).Struct(
-			g.typeFields(c)...,
-		)
-
-		// implement the interface for this struct
-		if !g.isEnum(c.IRI) {
-			f.Func().Params(Id("o").Op("*").Id(name)).Id(viewPrefix + name).Params().Op("*").Id(name).Block(
-				Return(Id("o")),
+		if c.Abstract && g.flatStruct {
+			log("skipping abstract type:", c.GoName)
+		} else {
+			// append the actual struct
+			f.Type().Id(name).Struct(
+				g.typeFields(c)...,
 			)
-		}
 
-		// add all the named individuals defined for this type
-		g.appendNamedIndividualsForType(f, c.IRI)
+			// implement the interface for this struct
+			if !g.isEnum(c.IRI) {
+				g.appendStructImplFuncs(f, name, c)
+			}
+
+			// add all the named individuals defined for this type
+			g.appendNamedIndividualsForType(f, c.IRI)
+		}
 
 		// append the list type for this struct
 		if g.isObject(c.IRI) && !g.isEnum(c.IRI) {
@@ -212,8 +223,10 @@ func (g *generator) Generate() {
 	// append external IRI type
 	g.appendExternalIRI(f)
 
-	// append cast functions
-	g.appendCastFuncs(f)
+	if !g.flatStruct {
+		// append cast functions
+		g.appendCastFuncs(f)
+	}
 
 	// append custom type names like ld.URI
 	g.appendCustomTypes(f)
@@ -320,7 +333,7 @@ func (g *generator) isList(_ *Class, p *Property) bool {
 
 func (g *generator) embedSupertypeOrID(c *Class) []Code {
 	var out []Code
-	if c.ParentIRI != "" {
+	if !g.flatStruct && c.ParentIRI != "" {
 		p := g.iriToType[c.ParentIRI]
 		if p == nil {
 			panic("Unknown parent: " + c.ParentIRI)
@@ -340,6 +353,9 @@ func (g *generator) embedSupertypeOrID(c *Class) []Code {
 
 func (g *generator) addDirectProperties(c *Class) []Code {
 	var out []Code
+	if parent := g.iriToType[c.ParentIRI]; g.flatStruct && parent != nil {
+		out = g.addDirectProperties(parent)
+	}
 	for _, p := range c.Properties {
 		name := g.fieldName(c, p)
 		if p.Comment != "" {
@@ -355,6 +371,58 @@ func (g *generator) addDirectProperties(c *Class) []Code {
 		out = append(out, Id(name).Add(g.fieldType(c, p)).Tag(tags))
 	}
 	return out
+}
+
+func (g *generator) appendInterfaceDefinition(c *Class) []Code {
+	var params []Code
+	if c.ParentIRI != "" {
+		// extend parent types for proper type safety e.g. assign AnyExtension to AnyElement
+		parent := g.iriToType[c.ParentIRI]
+		params = append(params, Id(interfacePrefix+parent.GoName))
+	}
+	if g.flatStruct {
+		// append the asThing() method to the interface
+		params = append(params, Id(viewPrefix+c.GoName).Params())
+
+		// append getters and setters for properties
+		for _, p := range c.Properties {
+			typ := g.fieldType(c, p)
+			params = append(params,
+				Id(getterPrefix+p.GoName).Params().Add(typ),
+				Id(setterPrefix+p.GoName).Params(typ),
+			)
+		}
+	} else {
+		// append the asThing() method to the interface
+		params = append(params, Id(viewPrefix+c.GoName).Params().Op("*").Id(c.GoName))
+	}
+	return params
+}
+
+func (g *generator) appendStructImplFuncs(f *File, name string, c *Class) {
+	if g.flatStruct {
+		f.Func().Params(Id("o").Op("*").Id(name)).Id(viewPrefix + c.GoName).Params().Block()
+		if parent := g.iriToType[c.ParentIRI]; parent != nil {
+			g.appendStructImplFuncs(f, name, parent)
+		}
+	} else {
+		f.Func().Params(Id("o").Op("*").Id(name)).Id(viewPrefix + c.GoName).Params().Op("*").Id(c.GoName).Block(
+			Return(Id("o")),
+		)
+	}
+
+	if g.gettersSetters || g.flatStruct {
+		// append getters and setters for properties
+		for _, p := range c.Properties {
+			typ := g.fieldType(c, p)
+			f.Func().Params(Id("o").Op("*").Id(name)).Id(getterPrefix + p.GoName).Params().Add(typ).Block(
+				Return(Id("o").Dot(p.GoName)),
+			)
+			f.Func().Params(Id("o").Op("*").Id(name)).Id(setterPrefix + p.GoName).Params(Id("v").Add(typ)).Block(
+				Id("o").Dot(p.GoName).Op("=").Id("v"),
+			)
+		}
+	}
 }
 
 func (g *generator) fieldType(c *Class, p *Property) Code {
@@ -453,10 +521,25 @@ func (g *generator) appendListTypeGetters(f *File, listTypeName string, listTyp 
 		c := g.iriToType[iri]
 		if c == listTyp || g.isSubtypeOf(listTyp, c) {
 			getterName := g.name(NameTypeFunc, g.pluralize(g.className(c.IRI)), c)
-			castName := g.name(NameTypeFunc, castPrefix+g.className(c.IRI), c)
-			f.Func().Params(Id("o").Op("*").Id(listTypeName)).Id(getterName).Params().Qual(ldImport, "TypeSeq").Index(Id(g.interfaceName(listTyp.IRI)).Op(",").Op("*").Id(g.className(c.IRI))).Block(
-				Return().Qual(ldImport, "NewTypeSeq").Params(Op("*").Id("o"), Id(castName)),
-			)
+			if g.flatStruct {
+				// func (o ThingList) SubType() []AnySubType {
+				//   var out []AnySubType
+				//   for _, v := range o {
+				//     if v2, ok := v.(AnySubType); ok {
+				//       out = append(out, v)
+				//     }
+				//    return out
+				//  }
+				g.className(c.IRI)
+				f.Func().Params(Id("v").Id(listTypeName)).Id(getterName).Params().Index().Id(g.interfaceName(c.IRI)).Block(
+					Return(Qual(ldImport, "SliceOf").Index(Id(g.interfaceName(c.IRI))).Params(Id("v"))),
+				)
+			} else {
+				castName := g.name(NameTypeFunc, castPrefix+g.className(c.IRI), c)
+				f.Func().Params(Id("o").Op("*").Id(listTypeName)).Id(getterName).Params().Qual(ldImport, "TypeSeq").Index(Id(g.interfaceName(listTyp.IRI)).Op(",").Op("*").Id(g.className(c.IRI))).Block(
+					Return().Qual(ldImport, "NewTypeSeq").Params(Op("*").Id("o"), Id(castName)),
+				)
+			}
 		}
 	}
 }
@@ -483,15 +566,17 @@ func (g *generator) appendExternalIRI(f *File) {
 		),
 	)
 
-	for _, name := range keys(g.nameToIRI) {
-		iri := g.nameToIRI[name]
-		if g.isEnum(iri) {
-			continue
+	if !g.flatStruct {
+		for _, name := range keys(g.nameToIRI) {
+			iri := g.nameToIRI[name]
+			if g.isEnum(iri) {
+				continue
+			}
+			castName := g.name(NameTypeFunc, castPrefix+name, nil)
+			f.Func().Params(Id("o").Op("*").Id(structName)).Id(viewPrefix + name).Params().Op("*").Id(name).Block(
+				Return().Id(castName).Params(Id("o").Dot("value")),
+			)
 		}
-		castName := g.name(NameTypeFunc, castPrefix+name, nil)
-		f.Func().Params(Id("o").Op("*").Id(structName)).Id(viewPrefix + name).Params().Op("*").Id(name).Block(
-			Return().Id(castName).Params(Id("o").Dot("value")),
-		)
 	}
 }
 
@@ -570,6 +655,11 @@ func (g *generator) appendNamedIndividualsForType(f *File, typeIRI string) {
 			f.Var().Id(varName).Op("=").Id(typeName).Block(
 				g.setId(c, ni.IRI),
 			)
+		} else if g.flatStruct {
+			c := g.iriToType[typeIRI]
+			f.Var().Id(varName).Id(g.interfaceName(typeIRI)).Op("=").Op("&").Id(c.GoName).Block(
+				Id(ld.GoIdField).Op(":").Lit(ni.IRI).Op(","),
+			)
 		} else {
 			f.Var().Id(varName).Id(g.interfaceName(typeIRI)).Op("=").Op("&").Id(externalIriName).Block(
 				Id(unexport(ld.GoIdField)).Op(":").Lit(ni.IRI).Op(","),
@@ -611,8 +701,11 @@ func (g *generator) appendContextRegistration(f *File) {
 			}
 			for _, name := range keys(g.nameToIRI) {
 				iri := g.nameToIRI[name]
-				typ := g.iriToType[iri]
-				params = append(params, Line().Id(typ.GoName).Block())
+				c := g.iriToType[iri]
+				if g.flatStruct && c.Abstract {
+					continue
+				}
+				params = append(params, Line().Id(c.GoName).Block())
 				for _, ni := range g.namedIndividuals[iri] {
 					params = append(params, Line().Id(g.namedIndividualName(ni)))
 				}
@@ -696,4 +789,6 @@ var (
 	castPrefix              = "cast"
 	ldImport                = reflect.TypeOf(ld.Type{}).PkgPath()
 	externalIriName         = "ExternalIRI"
+	getterPrefix            = "Get"
+	setterPrefix            = "Set"
 )
