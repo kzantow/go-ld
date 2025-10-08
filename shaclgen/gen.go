@@ -40,6 +40,7 @@ func Generate(opts ...Option) {
 	for _, opt := range opts {
 		opt(g)
 	}
+	g.idField = g.name(NameTypeField, ld.GoIdField, nil)
 	g.Generate()
 }
 
@@ -145,6 +146,7 @@ type generator struct {
 	pluralizer        *pluralize.Client
 	renameFunc        renameFunc
 	customTypes       map[string]string
+	idField           string
 	useEnums          bool
 	flatStruct        bool
 	gettersSetters    bool
@@ -208,6 +210,8 @@ func (g *generator) Generate() {
 			// implement the interface for this struct
 			if !g.isEnum(c.IRI) {
 				g.appendStructImplFuncs(f, name, c)
+			} else if g.gettersSetters || g.flatStruct {
+				g.appendGetID(f, name, c)
 			}
 
 			// add all the named individuals defined for this type
@@ -340,7 +344,7 @@ func (g *generator) embedSupertypeOrID(c *Class) []Code {
 		}
 		out = append(out, Id(p.GoName))
 	} else {
-		idField := ld.GoIdField
+		idField := g.idField
 		if g.isEnum(c.IRI) {
 			idField = unexport(idField)
 		}
@@ -379,6 +383,11 @@ func (g *generator) appendInterfaceDefinition(c *Class) []Code {
 		// extend parent types for proper type safety e.g. assign AnyExtension to AnyElement
 		parent := g.iriToType[c.ParentIRI]
 		params = append(params, Id(interfacePrefix+parent.GoName))
+	} else {
+		params = append(params,
+			Id(getterPrefix+g.idField).Params().Id("string"),
+			Id(setterPrefix+g.idField).Params(Id("string")),
+		)
 	}
 	if g.flatStruct {
 		// append the asThing() method to the interface
@@ -404,6 +413,12 @@ func (g *generator) appendStructImplFuncs(f *File, name string, c *Class) {
 		f.Func().Params(Id("o").Op("*").Id(name)).Id(viewPrefix + c.GoName).Params().Block()
 		if parent := g.iriToType[c.ParentIRI]; parent != nil {
 			g.appendStructImplFuncs(f, name, parent)
+		} else {
+			// append id getter and setter once, for the top-most type
+			g.appendGetID(f, name, c)
+			f.Func().Params(Id("o").Op("*").Id(name)).Id(setterPrefix + g.idField).Params(Id("v").Id("string")).Block(
+				Id("o").Dot(g.idField).Op("=").Id("v"),
+			)
 		}
 	} else {
 		f.Func().Params(Id("o").Op("*").Id(name)).Id(viewPrefix + c.GoName).Params().Op("*").Id(c.GoName).Block(
@@ -553,7 +568,7 @@ func (g *generator) appendExternalIRI(f *File) {
 
 	// append type without type info, these will only output as an id
 	f.Type().Id(structName).Struct(
-		Id(unexport(ld.GoIdField)).Id("string").Tag(map[string]string{
+		Id(unexport(g.idField)).Id("string").Tag(map[string]string{
 			ld.GoIriTagName: ld.JsonIdProp,
 		}),
 		Id("value").Any(),
@@ -562,7 +577,7 @@ func (g *generator) appendExternalIRI(f *File) {
 	// append creation function
 	f.Func().Id(g.externalIRIName()).Params(Id("id").Id("string")).Op("*").Id(structName).Block(
 		Return().Op("&").Id(structName).Block(
-			Id(unexport(ld.GoIdField)).Op(":").Id("id").Op(","),
+			Id(unexport(g.idField)).Op(":").Id("id").Op(","),
 		),
 	)
 
@@ -658,11 +673,11 @@ func (g *generator) appendNamedIndividualsForType(f *File, typeIRI string) {
 		} else if g.flatStruct {
 			c := g.iriToType[typeIRI]
 			f.Var().Id(varName).Id(g.interfaceName(typeIRI)).Op("=").Op("&").Id(c.GoName).Block(
-				Id(ld.GoIdField).Op(":").Lit(ni.IRI).Op(","),
+				Id(g.idField).Op(":").Lit(ni.IRI).Op(","),
 			)
 		} else {
 			f.Var().Id(varName).Id(g.interfaceName(typeIRI)).Op("=").Op("&").Id(externalIriName).Block(
-				Id(unexport(ld.GoIdField)).Op(":").Lit(ni.IRI).Op(","),
+				Id(unexport(g.idField)).Op(":").Lit(ni.IRI).Op(","),
 			)
 		}
 	}
@@ -677,9 +692,9 @@ func (g *generator) setId(c *Class, iri string) Code {
 		).Op(",")
 	}
 	if g.isEnum(c.IRI) {
-		return Id(unexport(ld.GoIdField)).Op(":").Lit(iri).Op(",")
+		return Id(unexport(g.idField)).Op(":").Lit(iri).Op(",")
 	}
-	return Id(ld.GoIdField).Op(":").Lit(iri).Op(",")
+	return Id(g.idField).Op(":").Lit(iri).Op(",")
 }
 
 func (g *generator) appendCustomTypes(f *File) {
@@ -741,6 +756,16 @@ func (g *generator) externalIRIName() string {
 	funcName := g.name(NameTypeFunc, "New"+structName, nil)
 	funcName = upperFirst(funcName)
 	return funcName
+}
+
+func (g *generator) appendGetID(f *File, name string, c *Class) {
+	idField := g.idField
+	if g.isEnum(c.IRI) {
+		idField = unexport(idField)
+	}
+	f.Func().Params(Id("o").Op("*").Id(name)).Id(getterPrefix + g.idField).Params().Id("string").Block(
+		Return(Id("o").Dot(idField)),
+	)
 }
 
 func getMap(contextJSON map[string]any) Code {
