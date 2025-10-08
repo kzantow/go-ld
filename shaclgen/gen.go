@@ -698,9 +698,9 @@ func (g *generator) setId(c *Class, iri string) Code {
 }
 
 func (g *generator) appendCustomTypes(f *File) {
-	for typ, alias := range g.customTypes {
+	for _, typ := range keys(g.customTypes) {
 		pkg := reflect.TypeOf(ld.URI("")).PkgPath()
-		f.Type().Id(alias).Op("=").Qual(pkg, typ)
+		f.Type().Id(g.customTypes[typ]).Op("=").Qual(pkg, typ)
 	}
 }
 
